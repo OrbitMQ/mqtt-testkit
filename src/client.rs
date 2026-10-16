@@ -260,6 +260,26 @@ impl Client {
         }
     }
 
+    /// Collects what the broker sends within `timeout`, stopping early at a
+    /// close. Returns the packets and whether the connection was closed;
+    /// unlike [`Client::expect_closed`], a connection left open is not an
+    /// error.
+    pub fn packets_until_close(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(Vec<Packet>, bool), HarnessError> {
+        let deadline = Instant::now() + timeout;
+        let mut seen = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.next_event(left)? {
+                Event::Packet(p) => seen.push(p),
+                Event::Closed => return Ok((seen, true)),
+                Event::Timeout => return Ok((seen, false)),
+            }
+        }
+    }
+
     /// Like [`Client::expect_closed`], for a close the spec requires without
     /// a deadline: waits up to 30 s and notes a close that came after
     /// [`default_timeout`] (for example when a server ignores a packet and

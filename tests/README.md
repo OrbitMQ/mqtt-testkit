@@ -177,8 +177,10 @@ Where the specification allows several behaviours, the cases accept all of them.
   An unmapped Topic Alias needs only the close; any error code may come with it.
 - **DISCONNECT to a 3.x client.** 3.x has no server-to-client DISCONNECT. Where a case requires a close, a
   5.0-style DISCONNECT immediately before it is noted, not failed: it does not answer the client's packet.
-- **No deadline for a close.** When the first packet is not CONNECT, the close may come at the server's own
-  CONNECT timeout; the case waits up to 30 s and notes a late close.
+- **First packet other than CONNECT.** MQTT-3.1.0-1 binds the client, and the server only SHOULD close a
+  connection that sends no CONNECT. The normal-tier case requires that nothing but a refusing CONNACK is sent
+  (MQTT-3.2.0-1, 5.0 MQTT-3.14.0-1); the strict-tier case requires the close, waiting up to 30 s because it
+  may come at the server's own CONNECT timeout.
 - **In-flight window.** A server may keep fewer QoS > 0 messages in flight than the client's Receive Maximum
   allows, down to one at a time. Cases read what is in flight and acknowledge to get the rest; a check that
   needs two messages in flight at once (distinct identifiers, PUBREL order, unsubscribing two started

@@ -210,16 +210,51 @@ pub fn second_connect_is_a_protocol_error() {
     c.expect_error_close(default_timeout()).unwrap();
 }
 
+/// PINGREQ and a PUBLISH, each sent as the first packet of a connection.
+fn first_packets() -> [Packet; 2] {
+    [
+        Packet::PingReq,
+        Packet::Publish(crate::Publish::new("conformance/first", b"x")),
+    ]
+}
+
+/// The server answers a first packet other than CONNECT with nothing but a
+/// refusal (a CONNACK of 0x80 or above); never a DISCONNECT. It may close or
+/// wait for a CONNECT.
+pub fn first_packet_other_than_connect_is_not_answered() {
+    let broker = broker_or_skip!();
+    for packet in first_packets() {
+        let mut c = broker.open(V).unwrap();
+        c.send(&packet).unwrap();
+        let (packets, _closed) = c.packets_until_close(default_timeout()).unwrap();
+        // req: 5.0/MQTT-3.2.0-1
+        // req: 5.0/MQTT-3.14.0-1
+        assert!(
+            matches!(
+                packets.as_slice(),
+                [] | [Packet::ConnAck(crate::ConnAck {
+                    code: 0x80..=0xFF,
+                    ..
+                })]
+            ),
+            "{} answered with {packets:?}",
+            packet.name()
+        );
+    }
+}
+
+/// Strict: MQTT-3.1.0-1 binds the client; the only server text is a SHOULD close
+/// without CONNECT (3.1.4), so closing relies on detection (MQTT-4.13.1-1).
 pub fn first_packet_other_than_connect_closes_without_disconnect() {
     let broker = broker_or_skip!();
-    let publish = crate::Publish::new("conformance/first", b"x");
-    for packet in [Packet::PingReq, Packet::Publish(publish)] {
+    for packet in first_packets() {
         let mut c = broker.open(V).unwrap();
         c.send(&packet).unwrap();
         // No deadline for the close: a server may act only at its CONNECT timeout.
         // req: 5.0/MQTT-3.1.0-1
-        let packets = c.expect_closed_eventually().unwrap();
-        // req: 5.0/MQTT-3.14.0-1
+        let packets = c
+            .expect_closed_eventually()
+            .unwrap_or_else(|e| panic!("{}: {e}", packet.name()));
         assert!(
             packets.is_empty(),
             "{} answered with {packets:?}",
