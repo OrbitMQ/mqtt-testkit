@@ -17,7 +17,7 @@ pub fn retained_message_is_sent_to_new_subscribers_with_retain_1() {
     let mut publisher = session(&broker);
     publisher.publish(&t, b"kept", 1, true).unwrap();
     let mut late = session(&broker);
-    late.subscribe(&t, 1).unwrap();
+    late.subscribe_needing(&t, 1);
     let p = late.expect_publish(default_timeout()).unwrap();
     // req: 3.1.1/MQTT-3.3.1-5
     // req: 3.1.1/MQTT-3.3.1-6

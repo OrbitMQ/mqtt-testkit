@@ -55,10 +55,15 @@ pub fn qos1_and_qos2_messages_are_queued_while_offline() {
     let got = c.expect_publishes(2, default_timeout()).unwrap();
     // req: 3.1/V31-2.2-3
     // req: 3.1/V31-3.3-5
-    assert_eq!(got[0].payload, b"one");
-    assert_eq!(got[0].qos, granted.min(1));
-    assert_eq!(got[1].payload, b"two");
-    assert_eq!(got[1].qos, granted.min(2));
+    // 3.1 ordering is conditional (§4.3), so the two are matched by payload.
+    let delivered = |payload: &[u8]| {
+        got.iter()
+            .find(|p| p.payload == payload)
+            .unwrap_or_else(|| panic!("{payload:?} not delivered: {got:?}"))
+            .qos
+    };
+    assert_eq!(delivered(b"one"), granted.min(1));
+    assert_eq!(delivered(b"two"), granted.min(2));
     // QoS 0 messages may or may not be queued in 3.1; not checked.
     c.disconnect().unwrap();
     forget(&broker, &id);
@@ -106,7 +111,7 @@ pub fn unacknowledged_qos1_is_resent_with_dup_and_the_same_identifier() {
     let t = topic();
     let id = unique_id("pr1");
     let mut c = persistent(&broker, &id);
-    c.subscribe(&t, 1).unwrap();
+    c.subscribe_needing(&t, 1);
     let mut publisher = session(&broker);
     publisher.publish(&t, b"again", 1, false).unwrap();
     let first = c.expect_publish_unacked(default_timeout()).unwrap();
@@ -128,7 +133,7 @@ pub fn unacknowledged_qos2_publish_is_resent_with_dup() {
     let t = topic();
     let id = unique_id("pr2");
     let mut c = persistent(&broker, &id);
-    c.subscribe(&t, 2).unwrap();
+    c.subscribe_needing(&t, 2);
     let mut publisher = session(&broker);
     publisher.publish(&t, b"twice?", 2, false).unwrap();
     let first = c.expect_publish_unacked(default_timeout()).unwrap();
@@ -156,7 +161,7 @@ pub fn unacknowledged_pubrel_is_resent_and_publish_is_not() {
     let t = topic();
     let id = unique_id("prr");
     let mut c = persistent(&broker, &id);
-    c.subscribe(&t, 2).unwrap();
+    c.subscribe_needing(&t, 2);
     let mut publisher = session(&broker);
     publisher.publish(&t, b"rel", 2, false).unwrap();
     let p = c.expect_publish_unacked(default_timeout()).unwrap();
@@ -188,7 +193,7 @@ pub fn redelivery_keeps_the_original_order() {
     let t = topic();
     let id = unique_id("pro");
     let mut c = persistent(&broker, &id);
-    c.subscribe(&t, 1).unwrap();
+    c.subscribe_needing(&t, 1);
     let mut publisher = session(&broker);
     for i in 0..5u8 {
         publisher.publish(&t, &[i], 1, false).unwrap();

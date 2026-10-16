@@ -537,7 +537,8 @@ pub fn publish_above_maximum_qos_is_disconnected_with_0x9b() {
     let mut p = crate::Publish::new(&super::topic(), b"too-high");
     p.qos = max + 1;
     p.packet_id = Some(1);
-    c.send(&Packet::Publish(p)).unwrap();
+    // On purpose above the announced Maximum QoS: bypass the harness's gate.
+    c.send_raw(&Packet::Publish(p).encode(V)).unwrap();
     // req: 5.0/MQTT-3.2.2-11
     let reason = c.expect_error_close(default_timeout()).unwrap();
     if let Some(r) = reason {

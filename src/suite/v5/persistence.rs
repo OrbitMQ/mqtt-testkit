@@ -61,10 +61,20 @@ pub fn qos1_and_qos2_messages_are_queued_while_offline() {
     // req: 5.0/MQTT-3.1.2-5
     // req: 5.0/MQTT-3.1.2-23
     // req: 5.0/MQTT-4.5.0-1
-    assert_eq!(got[0].payload, b"one");
-    assert_eq!(got[0].qos, granted.min(1));
-    assert_eq!(got[1].payload, b"two");
-    assert_eq!(got[1].qos, granted.min(2));
+    // Ordering binds only for the same topic and QoS (4.6), so the two are
+    // matched by payload; their order is checked when both arrive at QoS 1.
+    let delivered = |payload: &[u8]| {
+        got.iter()
+            .find(|p| p.payload == payload)
+            .unwrap_or_else(|| panic!("{payload:?} not delivered: {got:?}"))
+            .qos
+    };
+    assert_eq!(delivered(b"one"), granted.min(1));
+    assert_eq!(delivered(b"two"), granted.min(2));
+    if granted == 1 {
+        // req: 5.0/MQTT-4.6.0-5
+        assert_eq!(got[0].payload, b"one", "{got:?}");
+    }
     // QoS 0 messages may or may not be queued; not checked.
     c.disconnect().unwrap();
     forget(&broker, &id);

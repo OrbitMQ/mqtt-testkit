@@ -46,6 +46,18 @@ pub fn skipped(reason: impl Into<String>) {
     });
 }
 
+/// Unwinding payload of [`skip_now`]; the runner reports the case as skipped.
+#[derive(Debug)]
+pub struct SkipNow;
+
+/// Records that the current case is skipped and ends it at once, from any
+/// depth (for example a harness helper that finds the broker lacks a
+/// capability the case needs). Unlike a panic this is never a failure.
+pub fn skip_now(reason: impl Into<String>) -> ! {
+    skipped(reason);
+    std::panic::resume_unwind(Box::new(SkipNow))
+}
+
 /// Records an observation about the broker that is not a failure.
 pub fn note(text: impl Into<String>) {
     let text = text.into();

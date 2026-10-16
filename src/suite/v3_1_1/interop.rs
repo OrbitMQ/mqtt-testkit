@@ -85,15 +85,13 @@ fn connect(broker: &Broker, client_id: &str, clean: bool) -> (Client, bool) {
     (c, ack.session_present())
 }
 
-/// Sends DISCONNECT and waits for the broker to close the connection, so that
-/// the broker has finished with this connection before the scenario goes on.
-fn disconnect(mut c: Client) {
-    c.send(&Packet::Disconnect(crate::ReasonOnly::default()))
-        .unwrap();
-    // A delivery that raced the DISCONNECT may precede the close; it is
-    // irrelevant here.
-    c.expect_closed(default_timeout())
-        .unwrap_or_else(|e| panic!("broker kept the connection open after DISCONNECT: {e}"));
+/// Sends DISCONNECT, closes the client's side (the client MUST close,
+/// MQTT-3.14.4-1; the server only SHOULD, §3.14.4) and waits briefly for the
+/// broker to finish with the connection before the scenario goes on. A
+/// delivery that raced the DISCONNECT is irrelevant here.
+fn disconnect(c: Client) {
+    c.disconnect_and_drain()
+        .unwrap_or_else(|e| panic!("DISCONNECT: {e}"));
 }
 
 /// Erases any session the broker holds for `client_id` (Clean Session = 1 connect, then
@@ -281,12 +279,13 @@ pub fn retained_messages_set_and_clear() {
         "wildcard subscription refused: {granted:#04x}"
     );
     let got = receive(&mut c, 3);
-    assert_eq!(got.len(), 3, "expected 3 retained messages, got {got:?}");
     for (t, qos) in &set {
-        let p = got
-            .iter()
-            .find(|p| &p.topic == t)
-            .unwrap_or_else(|| panic!("no retained message for {t}: {got:?}"));
+        let Some(p) = got.iter().find(|p| &p.topic == t) else {
+            // A server MAY discard a retained QoS 0 message at any time (MQTT-3.3.1-7).
+            assert_eq!(*qos, 0, "no retained message for {t}: {got:?}");
+            crate::outcome::note(format!("retained QoS 0 message on {t} was not kept"));
+            continue;
+        };
         // req: 3.1.1/MQTT-3.3.1-5
         // req: 3.1.1/MQTT-3.3.1-6
         assert_eq!(p.payload, format!("retained{qos}").as_bytes());

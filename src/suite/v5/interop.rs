@@ -248,6 +248,21 @@ fn qos_set(got: &[Publish]) -> BTreeSet<u8> {
     got.iter().map(|p| p.qos).collect()
 }
 
+/// Checks retained deliveries of messages published at QoS 0, 1 and 2 (and
+/// received at QoS 2): the QoS 1 and 2 ones must arrive, the QoS 0 one may be
+/// missing because a server MAY discard a retained QoS 0 message at any time
+/// (§3.3.1.3). Returns false (after a note) if it was discarded.
+fn retained_qos_set_ok(got: &[Publish], what: &str) -> bool {
+    let qos = qos_set(got);
+    if qos == BTreeSet::from([1, 2]) && got.len() == 2 {
+        note(format!("{what}: the retained QoS 0 message was not kept"));
+        return false;
+    }
+    assert_eq!(got.len(), 3, "{what}: {got:?}");
+    assert_eq!(qos, BTreeSet::from([0, 1, 2]), "{what}: {got:?}");
+    true
+}
+
 /// The Subscription Identifiers of a delivered PUBLISH, in order.
 fn subscription_ids(p: &Publish) -> Vec<u32> {
     props_of(&p.properties, prop::SUBSCRIPTION_IDENTIFIER)
@@ -441,8 +456,7 @@ pub fn retained_messages_keep_user_properties() {
     }
     let got = receive(&mut c, 3, default_timeout());
     // req: 5.0/MQTT-3.3.1-5
-    assert_eq!(got.len(), 3, "retained deliveries: {got:?}");
-    assert_eq!(qos_set(&got), BTreeSet::from([0, 1, 2]), "{got:?}");
+    retained_qos_set_ok(&got, "retained deliveries");
     for p in &got {
         // req: 5.0/MQTT-3.3.2-17
         // req: 5.0/MQTT-3.3.2-18
@@ -1119,13 +1133,17 @@ fn retain_as_published_part(broker: &Broker, t: &Topics) {
 
 /// Subscribes to W-plus-plus with `options` and returns what arrives.
 fn subscribe_and_collect(c: &mut Client, t: &Topics, options: u8, expect: usize) -> Vec<Publish> {
-    subscribe_ok(c, &t.w_plus_plus, options);
+    let granted = subscribe_ok(c, &t.w_plus_plus, options);
+    if granted < (options & 0x03) {
+        crate::outcome::skip_now(format!(
+            "broker granted QoS {granted}; the scenario compares delivered QoS values"
+        ));
+    }
     receive(c, expect, default_timeout())
 }
 
 /// Parts (c), (d) and (e): Retain Handling 1, 2 and 0.
 fn retain_handling_parts(broker: &Broker, t: &Topics) {
-    let all = BTreeSet::from([0u8, 1, 2]);
     // (c) Retain Handling 1.
     let (mut c, _) = open(broker, &connect(&unique_id("a5")));
     publish_with(&mut c, &t.t1, b"c0", 0, true, &[]);
@@ -1133,12 +1151,7 @@ fn retain_handling_parts(broker: &Broker, t: &Topics) {
     publish_with(&mut c, &t.t3, b"c2", 2, true, &[]);
     let first = subscribe_and_collect(&mut c, t, 2 | RETAIN_HANDLING_NEW, 3);
     // req: 5.0/MQTT-3.3.1-10
-    assert_eq!(
-        first.len(),
-        3,
-        "Retain Handling 1, new subscription: {first:?}"
-    );
-    assert_eq!(qos_set(&first), all, "{first:?}");
+    retained_qos_set_ok(&first, "Retain Handling 1, new subscription");
     let again = subscribe_and_collect(&mut c, t, 2 | RETAIN_HANDLING_NEW, 0);
     // req: 5.0/MQTT-3.3.1-10
     assert!(
@@ -1165,12 +1178,7 @@ fn retain_handling_parts(broker: &Broker, t: &Topics) {
         let got = subscribe_and_collect(&mut c, t, 2, 3);
         // req: 5.0/MQTT-3.3.1-9
         // req: 5.0/MQTT-3.8.4-4
-        assert_eq!(
-            got.len(),
-            3,
-            "Retain Handling 0, {round} subscription: {got:?}"
-        );
-        assert_eq!(qos_set(&got), all, "{got:?}");
+        retained_qos_set_ok(&got, &format!("Retain Handling 0, {round} subscription"));
     }
     bye(c);
 }
@@ -1629,7 +1637,10 @@ pub fn outbound_flow_control_receive_maximum() {
         skipped("broker announces Maximum QoS 0");
         return;
     }
-    subscribe_ok(&mut c, &t.t0, 2);
+    if subscribe_ok(&mut c, &t.t0, 2) < 1 {
+        skipped("broker granted QoS 0; the scenario needs QoS 1 deliveries");
+        return;
+    }
     let mut ids = Vec::new();
     for i in 0..3u8 {
         let id = c.next_packet_id();
@@ -1642,7 +1653,8 @@ pub fn outbound_flow_control_receive_maximum() {
     let mut acked = BTreeSet::new();
     let mut inbound: Vec<Publish> = Vec::new();
     let deadline = Instant::now() + default_timeout();
-    while acked.len() < 3 || inbound.len() < 2 {
+    // Every PUBACK, and at least the first delivery.
+    while acked.len() < 3 || inbound.is_empty() {
         let left = deadline.saturating_duration_since(Instant::now());
         match c.next_event(left).unwrap() {
             Event::Packet(Packet::PubAck(a)) => {
@@ -1661,30 +1673,48 @@ pub fn outbound_flow_control_receive_maximum() {
                 inbound.push(p);
             }
             other => panic!(
-                "expected PUBACKs and 2 PUBLISHes, got {other:?} (PUBACKs {acked:?}, PUBLISHes {})",
+                "expected PUBACKs and PUBLISHes, got {other:?} (PUBACKs {acked:?}, PUBLISHes {})",
                 inbound.len()
             ),
         }
     }
+    // A server may use less than its send quota (down to one in flight).
+    if inbound.len() < 2 {
+        match c.next_event(quiet_period()).unwrap() {
+            Event::Packet(Packet::Publish(p)) => {
+                assert_eq!(p.qos, 1, "{p:?}");
+                inbound.push(p);
+            }
+            Event::Timeout => note("broker kept 1 of the 2 allowed QoS 1 messages in flight"),
+            other => panic!("expected a PUBLISH or nothing, got {other:?}"),
+        }
+    }
     // req: 5.0/MQTT-3.3.4-9
     c.expect_no_packet(quiet_period())
-        .unwrap_or_else(|e| panic!("with 2 unacknowledged PUBLISHes: {e}"));
-    c.send(&Packet::PubAck(Ack::new(inbound[0].packet_id.unwrap())))
-        .unwrap();
-    let third = c
-        .expect_publish_unacked(default_timeout())
-        .unwrap_or_else(|e| panic!("third PUBLISH after a PUBACK: {e}"));
-    assert_eq!(third.qos, 1, "{third:?}");
-    let payloads: BTreeSet<u8> = inbound
-        .iter()
-        .chain([&third])
-        .map(|p| p.payload[0])
-        .collect();
-    assert_eq!(payloads, BTreeSet::from([0, 1, 2]));
-    for p in [&inbound[1], &third] {
-        c.send(&Packet::PubAck(Ack::new(p.packet_id.unwrap())))
+        .unwrap_or_else(|e| panic!("with {} unacknowledged PUBLISHes: {e}", inbound.len()));
+    // Acknowledge the oldest each time; one more may follow, never more than
+    // two in flight.
+    let mut payloads = BTreeSet::new();
+    while payloads.len() < 3 {
+        let oldest = inbound.remove(0);
+        c.send(&Packet::PubAck(Ack::new(oldest.packet_id.unwrap())))
             .unwrap();
+        payloads.insert(oldest.payload[0]);
+        if payloads.len() + inbound.len() < 3 {
+            let next = c
+                .expect_publish_unacked(default_timeout())
+                .unwrap_or_else(|e| panic!("next PUBLISH after a PUBACK: {e}"));
+            assert_eq!(next.qos, 1, "{next:?}");
+            inbound.push(next);
+            // req: 5.0/MQTT-3.3.4-9
+            assert!(
+                inbound.len() <= 2,
+                "{} PUBLISHes unacknowledged",
+                inbound.len()
+            );
+        }
     }
+    assert_eq!(payloads, BTreeSet::from([0, 1, 2]));
     bye(c);
 }
 
@@ -1800,13 +1830,20 @@ fn will_delay_case(broker: &Broker, topic: &str, will_qos: u8, delay: u32, expir
     ));
     assert_eq!(got.topic, topic);
     assert_eq!(got.payload, payload.as_bytes());
+    // Never early (MQTT-3.1.2-8); a late Will only misses the SHOULD to
+    // publish promptly (§3.1.2.5), so it is noted.
     // req: 5.0/MQTT-3.1.2-8
     assert!(
-        elapsed + Duration::from_millis(200) >= nominal
-            && elapsed <= nominal + Duration::from_millis(1_500),
-        "Will Delay {delay} s, Session Expiry {expiry} s: Will after {elapsed:?}, expected \
-         about {nominal:?}"
+        elapsed + Duration::from_millis(200) >= nominal,
+        "Will Delay {delay} s, Session Expiry {expiry} s: Will after {elapsed:?}, before \
+         {nominal:?}"
     );
+    if elapsed > nominal + Duration::from_millis(1_500) {
+        note(format!(
+            "Will Delay {delay} s, Session Expiry {expiry} s: Will after {elapsed:.2?}, later \
+             than the nominal {nominal:?} (SHOULD publish promptly)"
+        ));
+    }
     let extra = cb.collect_publishes(quiet_period()).unwrap();
     assert!(extra.is_empty(), "more than one Will: {extra:?}");
     bye(cb);
@@ -1815,8 +1852,8 @@ fn will_delay_case(broker: &Broker, topic: &str, will_qos: u8, delay: u32, expir
 
 /// The Will is published when the Will Delay Interval or the session ends,
 /// whichever is first: delay 3 / expiry 5 (about 3 s), delay 5 / expiry 0
-/// (at once), delay 5 / expiry 2 (about 2 s). Window: nominal - 0.2 s to
-/// nominal + 1.5 s.
+/// (at once), delay 5 / expiry 2 (about 2 s). Earlier than nominal - 0.2 s
+/// fails; later than nominal + 1.5 s is noted.
 pub fn will_delay_versus_session_expiry() {
     let broker = broker_or_skip!();
     let will_qos = max_qos(&probe(&broker)).min(2);

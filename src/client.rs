@@ -47,6 +47,36 @@ pub struct Client {
     /// something else (e.g. a SUBACK); [`Client::next_event`] returns them
     /// first, in arrival order.
     stash: VecDeque<Packet>,
+    /// What the broker announced in a successful 5.0 CONNACK on this
+    /// connection, if any.
+    limits: Option<Limits>,
+}
+
+/// Capabilities a 5.0 server announces in CONNACK (spec defaults when absent).
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    maximum_qos: u8,
+    retain_available: bool,
+    wildcards_available: bool,
+}
+
+impl Limits {
+    fn from_connack(ack: &ConnAck) -> Self {
+        let byte = |id, default: u8| match codec::find_prop(&ack.properties, id) {
+            Some(codec::PropValue::Byte(v)) => *v,
+            _ => default,
+        };
+        Self {
+            maximum_qos: byte(codec::prop::MAXIMUM_QOS, 2),
+            retain_available: byte(codec::prop::RETAIN_AVAILABLE, 1) != 0,
+            wildcards_available: byte(codec::prop::WILDCARD_SUBSCRIPTION_AVAILABLE, 1) != 0,
+        }
+    }
+}
+
+/// Whether a topic filter uses a wildcard level.
+fn has_wildcard(filter: &str) -> bool {
+    filter.contains('+') || filter.contains('#')
 }
 
 impl Client {
@@ -95,6 +125,7 @@ impl Client {
             closed: false,
             next_id: 0,
             stash: VecDeque::new(),
+            limits: None,
         }
     }
 
@@ -153,7 +184,23 @@ impl Client {
     }
 
     /// Encodes and sends a packet with this client's version.
+    ///
+    /// A QoS 1/2 or retained PUBLISH that the broker announced it does not
+    /// support (5.0 Maximum QoS, Retain Available) ends the case as skipped:
+    /// the broker would rightly treat it as a Protocol Error. Cases that send
+    /// such a PUBLISH on purpose use [`Client::send_raw`].
     pub fn send(&mut self, packet: &Packet) -> Result<(), HarnessError> {
+        if let (Packet::Publish(p), Some(l)) = (packet, self.limits) {
+            if (1..=2).contains(&p.qos) && p.qos > l.maximum_qos {
+                crate::outcome::skip_now(format!(
+                    "broker announces Maximum QoS {}; the case needs QoS {}",
+                    l.maximum_qos, p.qos
+                ));
+            }
+            if p.retain && !l.retain_available {
+                crate::outcome::skip_now("broker announces Retain Available = 0");
+            }
+        }
         let bytes = packet.encode(self.version);
         self.send_raw(&bytes)
     }
@@ -163,7 +210,12 @@ impl Client {
         self.version = connect.version;
         self.send(&Packet::Connect(Box::new(connect.clone())))?;
         match self.expect_packet(default_timeout())? {
-            Packet::ConnAck(c) => Ok(c),
+            Packet::ConnAck(c) => {
+                if self.version.is_v5() && c.code == 0 {
+                    self.limits = Some(Limits::from_connack(&c));
+                }
+                Ok(c)
+            }
             p => Err(HarnessError::Unexpected(format!(
                 "expected CONNACK, got {p:?}"
             ))),
@@ -447,6 +499,29 @@ impl Client {
         self.subscribe_many(&[(filter, options)], Vec::new())
     }
 
+    /// Subscribes to one filter and requires a grant of at least the requested
+    /// QoS (`options & 3`). A server may grant less than requested (3.8.4), so
+    /// a lower grant ends the case as skipped: the case needs that QoS for
+    /// what it checks. A failure code fails the case.
+    ///
+    /// # Panics
+    ///
+    /// If the SUBSCRIBE fails or is refused (a case failure).
+    pub fn subscribe_needing(&mut self, filter: &str, options: u8) -> SubAck {
+        let ack = self
+            .subscribe(filter, options)
+            .unwrap_or_else(|e| panic!("SUBSCRIBE {filter}: {e}"));
+        let wanted = options & 0x03;
+        match ack.codes.first() {
+            Some(&g) if g >= 0x80 => panic!("SUBSCRIBE {filter} refused: {ack:?}"),
+            Some(&g) if g < wanted => crate::outcome::skip_now(format!(
+                "broker granted QoS {g} for a QoS {wanted} subscription; the case needs QoS {wanted}"
+            )),
+            Some(_) => ack,
+            None => panic!("SUBACK without a code: {ack:?}"),
+        }
+    }
+
     /// Sends one SUBSCRIBE with several filters (and 5.0 properties) and
     /// waits for its SUBACK.
     pub fn subscribe_many(
@@ -454,16 +529,30 @@ impl Client {
         filters: &[(&str, u8)],
         properties: Vec<Property>,
     ) -> Result<SubAck, HarnessError> {
+        let wildcard = filters.iter().any(|(f, _)| has_wildcard(f));
+        if wildcard && self.limits.is_some_and(|l| !l.wildcards_available) {
+            crate::outcome::skip_now("broker announces Wildcard Subscription Available = 0");
+        }
         let packet_id = self.next_packet_id();
         self.send(&Packet::Subscribe(Subscribe {
             packet_id,
             properties,
             filters: filters.iter().map(|(f, o)| ((*f).to_owned(), *o)).collect(),
         }))?;
-        self.wait_for(default_timeout(), "SUBACK", |p| match p {
+        let ack = self.wait_for(default_timeout(), "SUBACK", |p| match p {
             Packet::SubAck(s) if s.packet_id == packet_id => Some(s.clone()),
             _ => None,
-        })
+        })?;
+        // 0xA2: Wildcard Subscriptions not supported (5.0 §3.9.3).
+        if self.version.is_v5()
+            && filters
+                .iter()
+                .zip(&ack.codes)
+                .any(|((f, _), c)| *c == 0xA2 && has_wildcard(f))
+        {
+            crate::outcome::skip_now("broker refuses wildcard subscriptions (SUBACK 0xA2)");
+        }
+        Ok(ack)
     }
 
     /// Unsubscribes from one filter and waits for the UNSUBACK.
@@ -651,16 +740,49 @@ impl Client {
         Ok(quiet_since.elapsed())
     }
 
-    /// Sends a normal DISCONNECT (reason 0x00 in 5.0) and closes the socket.
-    pub fn disconnect(mut self) -> Result<(), HarnessError> {
-        let d = if self.version.is_v5() {
+    /// Sends a normal DISCONNECT (reason 0x00 in 5.0) and closes the sending
+    /// side, as a client must after DISCONNECT (MQTT-3.14.4-1).
+    pub fn disconnect(self) -> Result<(), HarnessError> {
+        let d = self.normal_disconnect();
+        self.disconnect_with(d)
+    }
+
+    /// DISCONNECT with reason 0x00 in 5.0 (no reason code in 3.x).
+    fn normal_disconnect(&self) -> ReasonOnly {
+        if self.version.is_v5() {
             ReasonOnly {
                 reason: Some(0),
                 properties: Vec::new(),
             }
         } else {
             ReasonOnly::default()
-        };
+        }
+    }
+
+    /// Sends DISCONNECT `d` and closes the sending side (MQTT-3.14.4-1, 5.0
+    /// MQTT-3.14.4-2), so the broker sees the connection end even if it
+    /// leaves closing to the client (it only SHOULD close, §3.14.4).
+    pub fn disconnect_with(mut self, d: ReasonOnly) -> Result<(), HarnessError> {
+        self.send_disconnect_and_half_close(d)
+    }
+
+    /// [`Client::disconnect`], then waits up to [`default_timeout`] for the
+    /// broker to finish with the connection (its close), ignoring anything it
+    /// still sends. A broker that keeps its side open is not an error.
+    pub fn disconnect_and_drain(mut self) -> Result<(), HarnessError> {
+        let d = self.normal_disconnect();
+        self.send_disconnect_and_half_close(d)?;
+        let deadline = Instant::now() + default_timeout();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.next_event(left)? {
+                Event::Packet(_) => {}
+                Event::Closed | Event::Timeout => return Ok(()),
+            }
+        }
+    }
+
+    fn send_disconnect_and_half_close(&mut self, d: ReasonOnly) -> Result<(), HarnessError> {
         self.send(&Packet::Disconnect(d))?;
         match &mut self.transport {
             Transport::Tcp(stream) => {
@@ -674,7 +796,6 @@ impl Client {
         }
         Ok(())
     }
-
     /// Drops the TCP connection without DISCONNECT (simulated network
     /// failure; over WebSocket also without a close frame).
     pub fn abort(self) {

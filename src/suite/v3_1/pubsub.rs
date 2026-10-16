@@ -66,7 +66,7 @@ pub fn qos1_delivery_uses_a_packet_identifier_and_dup_0() {
     let broker = broker_or_skip!();
     let t = topic();
     let mut sub = session(&broker);
-    sub.subscribe(&t, 1).unwrap();
+    sub.subscribe_needing(&t, 1);
     let mut publisher = session(&broker);
     publisher.publish(&t, b"one", 1, false).unwrap();
     let p = sub.expect_publish(default_timeout()).unwrap();
@@ -80,7 +80,7 @@ pub fn qos2_delivery_follows_the_pubrec_pubrel_pubcomp_flow() {
     let broker = broker_or_skip!();
     let t = topic();
     let mut sub = session(&broker);
-    sub.subscribe(&t, 2).unwrap();
+    sub.subscribe_needing(&t, 2);
     let mut publisher = session(&broker);
     publisher.publish(&t, b"two", 2, false).unwrap();
     let p = sub.expect_publish_unacked(default_timeout()).unwrap();
@@ -504,7 +504,7 @@ pub fn message_ids_appear_exactly_where_required() {
     let broker = broker_or_skip!();
     let t = topic();
     let mut sub = session(&broker);
-    sub.subscribe(&t, 2).unwrap();
+    sub.subscribe_needing(&t, 2);
     let mut publisher = session(&broker);
     // QoS 0: no Message ID in either direction. The payload starts with
     // bytes that look like one, so an inserted or stripped ID shows.

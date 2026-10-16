@@ -27,7 +27,7 @@ pub fn server_respects_the_clients_receive_maximum() {
                 .property(prop::RECEIVE_MAXIMUM, PropValue::TwoByte(2)),
         )
         .unwrap();
-    sub.subscribe(&t, 1).unwrap();
+    sub.subscribe_needing(&t, 1);
     let mut publisher = session(&broker);
     for i in 0..5u8 {
         publisher.publish(&t, &[i], 1, false).unwrap();
@@ -73,7 +73,7 @@ pub fn receive_maximum_counts_qos2_until_pubcomp() {
                 .property(prop::RECEIVE_MAXIMUM, PropValue::TwoByte(1)),
         )
         .unwrap();
-    sub.subscribe(&t, 2).unwrap();
+    sub.subscribe_needing(&t, 2);
     let mut publisher = session(&broker);
     publisher.publish(&t, b"a", 2, false).unwrap();
     publisher.publish(&t, b"b", 2, false).unwrap();
@@ -510,6 +510,13 @@ fn raw_expect(c: &mut super::Raw, kind: &str) -> (Packet, Vec<u8>) {
 
 pub fn server_omits_reason_strings_and_user_properties_that_do_not_fit() {
     let broker = broker_or_skip!();
+    // The raw client below bypasses the harness's capability gate, and the
+    // case publishes at QoS 2.
+    let (_, caps) = session_with_ack(&broker);
+    if connack_u32(&caps, prop::MAXIMUM_QOS, 2) < 2 {
+        crate::outcome::skipped("broker announces Maximum QoS below 2");
+        return;
+    }
     let t = unique_id("mps");
     // Smallest Maximum Packet Size that leaves room for this broker's
     // CONNACK without Reason String and User Properties and for the one
@@ -597,13 +604,24 @@ pub fn server_omits_reason_strings_and_user_properties_that_do_not_fit() {
     let Packet::Publish(p) = p else {
         unreachable!()
     };
-    let id = p.packet_id.unwrap();
-    c.send(&Packet::PubRec(Ack::new(id)));
-    let (_, bytes) = raw_expect(&mut c, "PUBREL");
-    // req: 5.0/MQTT-3.6.2-2
-    // req: 5.0/MQTT-3.6.2-3
-    fits(&bytes, max, "PUBREL");
-    c.send(&Packet::PubComp(Ack::new(id)));
+    // The broker may have granted less than QoS 2 (3.8.4): then there is no
+    // PUBREL to measure.
+    match (p.qos, p.packet_id) {
+        (2, Some(id)) => {
+            c.send(&Packet::PubRec(Ack::new(id)));
+            let (_, bytes) = raw_expect(&mut c, "PUBREL");
+            // req: 5.0/MQTT-3.6.2-2
+            // req: 5.0/MQTT-3.6.2-3
+            fits(&bytes, max, "PUBREL");
+            c.send(&Packet::PubComp(Ack::new(id)));
+        }
+        (q, id) => {
+            crate::outcome::note(format!("delivered at QoS {q}; no PUBREL to check"));
+            if let (1, Some(id)) = (q, id) {
+                c.send(&Packet::PubAck(Ack::new(id)));
+            }
+        }
+    }
 
     // A malformed PUBLISH (QoS 3, MQTT-3.3.1-4): any DISCONNECT must fit too.
     let mut bad = Publish::new(&t, b"x");

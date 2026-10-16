@@ -71,7 +71,8 @@ pub fn connect_subscribe_publish_round_trip_over_websocket() {
     let mut c = connected(&url, "wsrt");
     let topic = format!("ws/{}", unique_id("rt"));
     let ack = c.subscribe(&topic, 1).unwrap();
-    assert_eq!(ack.codes, [1]);
+    // A server may grant QoS 0 (3.8.4); the round trip works either way.
+    assert!(matches!(ack.codes.as_slice(), [0 | 1]), "{ack:?}");
     c.publish(&topic, b"over websocket", 1, false).unwrap();
     let p = c.expect_publish(default_timeout()).unwrap();
     assert_eq!(

@@ -87,6 +87,7 @@ pub fn client_id_of_23_characters_is_accepted() {
     assert_eq!(ack.code, 0x00);
 }
 
+/// Strict: "It is not valid to supply a password without supplying a user name" binds the client; 3.1 says only that the server should close an invalid CONNECT (V31-3.1-10).
 pub fn password_without_username_is_refused() {
     let broker = broker_or_skip!();
     let connect = Connect::new(V, &unique_id("pw")).password(b"secret");
@@ -94,6 +95,7 @@ pub fn password_without_username_is_refused() {
     refused(&broker, &connect);
 }
 
+/// Strict: Will QoS 0-2 binds the client; 3.1 says only that the server should close an invalid CONNECT (V31-3.1-10).
 pub fn will_qos_3_is_refused() {
     let broker = broker_or_skip!();
     let mut will = Will::new("conformance/will", b"x");

@@ -47,7 +47,9 @@ function is shown by `mqtt-testkit show`. Area files:
   reject it" puts a doc line `/// Strict: <reason>` on the function. The specifications require rejection
   only once the server detects the violation (5.0 MQTT-4.13.1-1, 3.1.1 MQTT-4.8.0-1), so a compliant broker
   may fail such a case. Strict cases run only with `run --strict`. Rules with an explicit server MUST (e.g.
-  ill-formed UTF-8 is a Malformed Packet, 5.0 MQTT-1.5.4-1; reserved flags; QoS 3) are not strict.
+  ill-formed UTF-8 is a Malformed Packet, 5.0 MQTT-1.5.4-1; reserved flags; QoS 3 in 3.1.1 and 5.0) are not
+  strict. MQTT 3.1 names almost no server reactions, so its cases built on a client rule (an invalid CONNECT,
+  reserved values, wildcards in a topic name) are strict.
 
 ### Requirements without a case
 
@@ -198,7 +200,8 @@ Where the specification allows several behaviours, the cases accept all of them.
   QoS 2 flow (PUBREL in PUBREC order) before asserting delivery, keep in-flight messages within the server's
   Receive Maximum, and require exactly one onward copy. PUBCOMP order is not asserted.
 - **Delivered QoS** must equal the minimum of the published QoS and the granted QoS. A server may grant less
-  than requested; cases compare with what was granted.
+  than requested; cases compare with what was granted, and a case that needs the requested QoS (to check a
+  QoS 1/2 flow or redelivery) skips when the grant is lower (`Client::subscribe_needing`).
 - **Overlapping subscriptions** (3.1.1 MQTT-3.3.5-1, 5.0 MQTT-3.3.4-2/4/5): one copy at the highest QoS, or
   one copy per subscription, are both accepted. The highest granted QoS and every Subscription
   Identifier must show up.
@@ -216,6 +219,10 @@ Where the specification allows several behaviours, the cases accept all of them.
   code (0x9B / 0x9A are only recommended).
 - **Maximum Packet Size (client's)**: every packet the server sends must fit; the server may drop Reason
   Strings and User Properties or never send them.
+- **Announced capabilities (5.0)**: a QoS 1/2 or retained PUBLISH above what CONNACK announced (Maximum QoS,
+  Retain Available), a wildcard SUBSCRIBE without Wildcard Subscription Available (or answered 0xA2), and a
+  Will refused with 0x9B / 0x9A end the case as skipped: the broker would rightly treat them as errors. The
+  client enforces this centrally; cases that send such a packet on purpose use `send_raw`.
 - **Capability-dependent cases** skip when the broker offers the feature they need it to lack (Maximum QoS,
   Retain Available, Topic Alias Maximum, wildcard support) or lacks a limit they need (Receive Maximum 65535,
   no Maximum Packet Size), and when the broker doesn't reject what they need rejected (authentication,
@@ -228,11 +235,21 @@ Where the specification allows several behaviours, the cases accept all of them.
 - **Empty client id (5.0)**: a server may refuse it (0x85 then close, or a bare close); the assigned-id cases
   skip then.
 - **Payload Format Indicator 0** may be forwarded as absent, since absent means 0.
+- **Retained QoS 0**: a server MAY discard a retained QoS 0 message at any time (MQTT-3.3.1-7), so where a
+  scenario publishes one, its absence later is noted, not failed; retained Wills that must be found are QoS 1.
+- **Will timing (5.0)**: MQTT-3.1.2-8 requires the Will after the Will Delay or the session end, whichever is
+  first; publishing promptly is a SHOULD. An early Will fails; a late one is noted.
+- **DISCONNECT from the client** is followed by closing the client's side (the client MUST close; the server
+  only SHOULD), so cases never wait on the server to close a connection the client should end.
 - **Session takeover and wills (5.0)**: whether the old connection's will is published when a new
   connection takes over the client id is ambiguous (MQTT-3.1.2-8 "new Network Connection before the
   Will Delay Interval" vs §3.1.4), so it is not tested.
 - **3.1 `$` topics** (V31-A-9), 3.1 retained-message deletion (V31-2.1-10) and 3.1.1 QoS 0 offline queueing
   are MAY behaviours and are not asserted. 3.1 QoS 0 offline queueing is asserted to be absent (V31-2.2-5).
+- **Ordering** binds only per topic and QoS (MQTT-4.6.0-5/6): messages queued at different QoS levels are
+  matched by payload, and their order is checked only when they arrive at the same QoS.
+- **Strict-tier failures** are client violations the broker did not reject. They never make a requirement
+  "violated", are counted separately (`strict_not_rejected` in the JSON summary) and do not fail the run.
 - **WebSocket**: responses to several packets in one frame may come in any order the spec allows; the server
   must select subprotocol `mqtt` and close on a text frame.
 - **No fixed sleeps for ordering across connections**: retained publishes that a later subscriber must find

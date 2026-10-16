@@ -288,6 +288,7 @@ pub fn valid_wildcard_placements_match() {
     }
 }
 
+/// Strict: 3.1 only calls such filters invalid (a client rule) and names no server reaction.
 pub fn misplaced_wildcards_never_match() {
     let broker = broker_or_skip!();
     let t = topic();

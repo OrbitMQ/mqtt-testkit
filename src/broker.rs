@@ -339,6 +339,16 @@ impl Broker {
         let (c, ack) = self.connect(connect)?;
         if ack.code == 0 {
             Ok((c, ack))
+        } else if connect.protocol_level == 5
+            && let Some(will) = &connect.will
+            && ((ack.code == 0x9B && will.qos > 0) || (ack.code == 0x9A && will.retain))
+        {
+            // QoS not supported / Retain not supported: the broker lacks what
+            // the case's Will needs (5.0 MQTT-3.2.2-12, -13).
+            crate::outcome::skip_now(format!(
+                "broker refused a Will it does not support (CONNACK {:#04x})",
+                ack.code
+            ))
         } else {
             Err(HarnessError::Unexpected(format!(
                 "CONNECT {:?} refused: {ack:?}",
