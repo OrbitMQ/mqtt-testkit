@@ -21,6 +21,9 @@ pub fn valid_connect_is_accepted_with_connack_first() {
     assert!(!ack.session_present());
     // req: 5.0/MQTT-3.2.2-1
     assert_eq!(ack.flags & 0xFE, 0);
+    // The whole suite runs over plain TCP: an ordered, lossless,
+    // bidirectional byte stream.
+    // req: 5.0/MQTT-4.2.0-1
     c.ping().unwrap();
 }
 
@@ -317,6 +320,49 @@ pub fn unsupported_authentication_method_is_refused() {
     // req: 5.0/MQTT-4.12.0-1
     if let Some(ack) = refused(&broker, &connect) {
         assert!(matches!(ack.code, 0x8C | 0x87), "{ack:?}");
+    }
+}
+
+/// An authentication check that fails must end the connection. An unknown
+/// Authentication Method fails every server's check; credentials no broker
+/// configures fail only on a broker that checks them (accepting them means no
+/// check ran, which is allowed).
+pub fn failed_authentication_check_closes_the_connection() {
+    let broker = broker_or_skip!();
+    let credentials = Connect::new(V, &unique_id("cred"))
+        .username(&unique_id("no-such-user"))
+        .password(b"mqtt-testkit-wrong-password");
+    let mut checks_failed = 0;
+    for (what, connect) in [
+        (
+            "unknown Authentication Method",
+            super::unknown_auth_method_connect(),
+        ),
+        ("unknown user name and password", credentials),
+    ] {
+        let mut c = broker.open(V).unwrap();
+        c.send(&Packet::Connect(Box::new(connect))).unwrap();
+        match c.next_event(default_timeout()).unwrap() {
+            crate::Event::Packet(Packet::ConnAck(a)) if a.code == 0 => {
+                crate::outcome::note(format!("{what} accepted: no check failed"));
+                c.disconnect().unwrap();
+                continue;
+            }
+            crate::Event::Packet(Packet::ConnAck(a)) => {
+                crate::outcome::note(format!("{what} refused with {:#04x}", a.code));
+                // req: 5.0/MQTT-3.1.4-2
+                let after = c
+                    .expect_closed(default_timeout())
+                    .unwrap_or_else(|e| panic!("{what}: refused, then {e}"));
+                assert!(after.is_empty(), "{what}: refused, then sent {after:?}");
+            }
+            crate::Event::Closed => {}
+            other => panic!("{what}: expected CONNACK or a close, got {other:?}"),
+        }
+        checks_failed += 1;
+    }
+    if checks_failed == 0 {
+        crate::outcome::skipped("broker accepted every CONNECT; no failed check to observe");
     }
 }
 
