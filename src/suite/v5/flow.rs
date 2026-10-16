@@ -61,6 +61,7 @@ pub fn server_respects_the_clients_receive_maximum() {
             }
         }
     }
+    // req: 5.0/MQTT-4.6.0-5
     assert_eq!(order, [0, 1, 2, 3, 4]);
 }
 
@@ -303,14 +304,19 @@ pub fn client_topic_alias_can_be_remapped() {
         by_alias.properties = vec![alias(1)];
         c.publish_packet(by_alias).unwrap();
     }
-    let got: Vec<String> = sub
+    // Order is guaranteed only per topic (MQTT-4.6.0-5), so compare
+    // (topic, payload) pairs as a multiset.
+    let mut got: Vec<(String, Vec<u8>)> = sub
         .expect_publishes(4, default_timeout())
         .unwrap()
         .into_iter()
-        .map(|p| p.topic)
+        .map(|p| (p.topic, p.payload))
         .collect();
+    got.sort();
+    let one = || (a.clone(), b"1".to_vec());
+    let two = || (b.clone(), b"2".to_vec());
     // req: 5.0/MQTT-3.3.2-12
-    assert_eq!(got, [a.clone(), a, b.clone(), b]);
+    assert_eq!(got, [one(), one(), two(), two()]);
 }
 
 pub fn unmapped_topic_alias_is_a_protocol_error() {
@@ -345,9 +351,15 @@ pub fn topic_alias_mappings_do_not_survive_the_connection() {
     if server_alias_max(&ack).is_none() {
         return;
     }
+    let mut sub = session(&broker);
+    sub.subscribe(&t, 0).unwrap();
     let mut set = Publish::new(&t, b"set");
     set.properties = vec![alias(1)];
     c.publish_packet(set).unwrap();
+    assert_eq!(
+        sub.expect_publish(default_timeout()).unwrap().payload,
+        b"set"
+    );
     c.disconnect().unwrap();
     let (mut c, _) = broker
         .connect_ok(
@@ -359,8 +371,12 @@ pub fn topic_alias_mappings_do_not_survive_the_connection() {
     let mut p = Publish::new("", b"stale");
     p.properties = vec![alias(1)];
     c.send(&Packet::Publish(p)).unwrap();
+    // The close an unmapped alias calls for is checked by
+    // unmapped_topic_alias_is_a_protocol_error; here the old mapping must not
+    // be used: nothing reaches the topic it named.
+    let _ = c.packets_until_close(default_timeout());
     // req: 5.0/MQTT-3.3.2-7
-    c.expect_error_close(default_timeout()).unwrap();
+    sub.expect_no_packet(quiet_period()).unwrap();
     super::forget(&broker, &id);
 }
 
@@ -420,6 +436,7 @@ fn resolve(publishes: &[Publish], max: u16) -> Vec<String> {
             Some(PropValue::TwoByte(a)) => {
                 // req: 5.0/MQTT-3.1.2-26
                 // req: 5.0/MQTT-3.3.2-11
+                // req: 5.0/MQTT-3.3.2-8
                 assert!((1..=max).contains(a), "alias {a} with maximum {max}");
                 if p.topic.is_empty() {
                     map.get(a)
@@ -453,7 +470,13 @@ pub fn server_topic_aliases_respect_the_clients_maximum() {
     let got = sub
         .expect_publishes(names.len(), default_timeout())
         .unwrap();
-    assert_eq!(resolve(&got, 2), names);
+    // Resolve in arrival order (aliases are per connection, in order), then
+    // compare as a multiset: order is guaranteed only per topic.
+    let mut resolved = resolve(&got, 2);
+    resolved.sort();
+    let mut expected = names;
+    expected.sort();
+    assert_eq!(resolved, expected);
 }
 
 pub fn no_topic_aliases_without_a_client_topic_alias_maximum() {

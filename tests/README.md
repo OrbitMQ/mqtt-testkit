@@ -169,8 +169,9 @@ Where the specification allows several behaviours, the cases accept all of them.
   table, a refusing CONNACK's size) skips that refusal when the broker accepts the CONNECT; the case that
   owns the refusal reports it.
 - **Unknown protocol level or name (5.0 cases).** A multi-version server may answer a CONNECT that is not
-  `MQTT` level 5 under another version's rules. Level ≠ 5 may get CONNACK 0x84 or a 3.x-style 0x01; a foreign
-  protocol name may get any non-zero code. The close is always mandatory. Levels 0–2 with `MQTT` are tested
+  `MQTT` level 5 under another version's rules. Level ≠ 5 may get CONNACK 0x84 or a 3.x-style 0x01, then the
+  close. A foreign protocol name may be closed, refused with any non-zero code (then closed), or handled
+  under another protocol in silence (MQTT-3.1.2-1); it must never be accepted as MQTT. Levels 0–2 with `MQTT` are tested
   under 3.1.1 rules (CONNACK 0x01): a 3.1.1 CONNACK 0x01 satisfies both specifications, a 5.0 CONNACK 0x84
   does not satisfy MQTT-3.1.2-2 of 3.1.1. A 3.1 `MQIsdp` CONNECT with level 5 (sent with a Property Length)
   may be answered as a 5.0 CONNECT with a foreign name: a 5.0 CONNACK with any error code, then the close.
@@ -212,11 +213,13 @@ Where the specification allows several behaviours, the cases accept all of them.
 - **Wildcard support (3.1.1)**: a server may reject wildcard filters (0x80 or close); a granted one must match.
 - **Reason-code choices**: UNSUBACK for a filter that had no subscription may be 0x11 or 0x00. PUBACK and
   PUBREC may carry any code from their tables. PUBCOMP for an unknown PUBREL may be 0x92 or 0x00, but after
-  a message expired mid-flow it must be 0x00. Topic Alias 0 may be 0x94 or 0x82. An alias above the maximum
-  must be 0x94, Receive Maximum exceeded 0x93 (or a PUBREC ≥ 0x80 for the excess PUBLISH), Maximum Packet
-  Size exceeded 0x95, QoS above Maximum QoS 0x9B and RETAIN without Retain Available 0x9A, each only if a
-  DISCONNECT is sent. A Will QoS or Will Retain beyond the server's capability may be refused with any error
-  code (0x9B / 0x9A are only recommended).
+  a message expired mid-flow it must be 0x00. Sending a DISCONNECT before closing for an error is a SHOULD
+  (§4.13.1), and the code the spec names for an error is "used", not mandated: normal-tier cases require only
+  the close (and a code ≥ 0x80 if a DISCONNECT is sent) and note a code other than the named one (Topic Alias
+  0 or above the maximum 0x94, Maximum Packet Size exceeded 0x95, QoS above Maximum QoS 0x9B). Strict-tier
+  cases require the named code when a DISCONNECT is sent (alias above the maximum 0x94, Receive Maximum
+  exceeded 0x93 or a PUBREC ≥ 0x80 for the excess PUBLISH, RETAIN without Retain Available 0x9A). A Will
+  QoS or Will Retain beyond the server's capability may be refused with any error code.
 - **Maximum Packet Size (client's)**: every packet the server sends must fit; the server may drop Reason
   Strings and User Properties or never send them.
 - **Announced capabilities (5.0)**: a QoS 1/2 or retained PUBLISH above what CONNACK announced (Maximum QoS,
@@ -245,7 +248,8 @@ Where the specification allows several behaviours, the cases accept all of them.
   connection takes over the client id is ambiguous (MQTT-3.1.2-8 "new Network Connection before the
   Will Delay Interval" vs §3.1.4), so it is not tested.
 - **3.1 `$` topics** (V31-A-9), 3.1 retained-message deletion (V31-2.1-10) and 3.1.1 QoS 0 offline queueing
-  are MAY behaviours and are not asserted. 3.1 QoS 0 offline queueing is asserted to be absent (V31-2.2-5).
+  are MAY behaviours and are not asserted. 3.1's "QoS 0 messages are never stored" (V31-2.2-5) is descriptive
+  prose, so 3.1 QoS 0 offline queueing is only noted.
 - **Ordering** binds only per topic and QoS (MQTT-4.6.0-5/6): messages queued at different QoS levels are
   matched by payload, and their order is checked only when they arrive at the same QoS.
 - **Strict-tier failures** are client violations the broker did not reject. They never make a requirement

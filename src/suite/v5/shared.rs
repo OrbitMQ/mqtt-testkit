@@ -40,19 +40,21 @@ fn group() -> String {
     unique_id("g")
 }
 
-pub fn each_message_goes_to_exactly_one_group_member() {
-    let broker = broker_or_skip!();
-    if !shared_available(&broker) {
-        return;
+/// Publishes 20 QoS 1 messages to a two-member shared subscription and counts
+/// how often each payload arrives; `None` (after a skip) without shared
+/// subscriptions.
+fn shared_deliveries(broker: &crate::Broker) -> Option<(HashMap<u8, usize>, u8)> {
+    if !shared_available(broker) {
+        return None;
     }
     let t = topic();
     let filter = format!("$share/{}/{t}", group());
-    let mut members: Vec<Client> = (0..2).map(|_| session(&broker)).collect();
+    let mut members: Vec<Client> = (0..2).map(|_| session(broker)).collect();
     for m in &mut members {
         let ack = m.subscribe(&filter, 1).unwrap();
         assert!(ack.codes[0] <= 1, "{ack:?}");
     }
-    let mut publisher = session(&broker);
+    let mut publisher = session(broker);
     let n = 20u8;
     for i in 0..n {
         publisher.publish(&t, &[i], 1, false).unwrap();
@@ -64,12 +66,26 @@ pub fn each_message_goes_to_exactly_one_group_member() {
             *seen.entry(p.payload[0]).or_default() += 1;
         }
     }
-    // No message is lost: the shared subscription is a matching
-    // subscription (4.5.0-1).
+    Some((seen, n))
+}
+
+pub fn shared_subscription_loses_no_message() {
+    let broker = broker_or_skip!();
+    let Some((seen, n)) = shared_deliveries(&broker) else {
+        return;
+    };
+    // The shared subscription is a matching subscription (4.5.0-1).
     // req: 5.0/MQTT-4.5.0-1
     assert_eq!(seen.len(), usize::from(n), "lost messages: {seen:?}");
-    // Section 4.8.2 sends each message to only one session of the group;
-    // that text is not a numbered normative statement, so it is uncited.
+}
+
+/// Section 4.8.2 sends each message to only one session of the group. That text
+/// is not a numbered normative statement, so this case cites none.
+pub fn each_message_goes_to_exactly_one_group_member() {
+    let broker = broker_or_skip!();
+    let Some((seen, _)) = shared_deliveries(&broker) else {
+        return;
+    };
     assert!(seen.values().all(|c| *c == 1), "duplicates: {seen:?}");
 }
 

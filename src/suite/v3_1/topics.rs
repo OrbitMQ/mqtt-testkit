@@ -72,13 +72,13 @@ pub fn hash_matches_the_parent_and_all_descendants() {
 pub fn matching_is_case_sensitive_and_does_not_normalise() {
     let broker = broker_or_skip!();
     let t = topic();
-    let exact = format!("{t}/Caf\u{e9} \u{1F680}");
+    let exact = format!("{t}/Caf\u{e9} \u{2603}");
     let topics = [
         exact.clone(),
-        format!("{t}/caf\u{e9} \u{1F680}"),
+        format!("{t}/caf\u{e9} \u{2603}"),
         // Decomposed e + combining acute accent: a different byte sequence.
-        format!("{t}/Cafe\u{301} \u{1F680}"),
-        format!("{t}/Caf\u{e9}  \u{1F680}"),
+        format!("{t}/Cafe\u{301} \u{2603}"),
+        format!("{t}/Caf\u{e9}  \u{2603}"),
     ];
     let got = matched(&broker, &exact, &topics);
     // req: 3.1/V31-A-7
@@ -202,9 +202,11 @@ pub fn forwarded_topic_name_is_the_published_name() {
 pub fn multi_byte_utf8_strings_round_trip() {
     let broker = broker_or_skip!();
     let t = topic();
-    // 2-, 3- and 4-byte sequences: the byte length (the 2-byte prefix)
-    // differs from the character count.
-    let name = format!("{t}/\u{e9}t\u{e9}/\u{20ac}/\u{1D11E}");
+    // 2- and 3-byte sequences: the byte length (the 2-byte prefix) differs
+    // from the character count. No 4-byte ones: 3.1 strings are Java's
+    // writeUTF format (§2.5), which encodes characters outside the BMP as
+    // surrogate pairs.
+    let name = format!("{t}/\u{e9}t\u{e9}/\u{20ac}/\u{4e2d}");
     assert_ne!(name.len(), name.chars().count());
     let mut exact = session(&broker);
     exact.subscribe(&name, 0).unwrap();

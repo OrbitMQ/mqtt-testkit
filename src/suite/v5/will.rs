@@ -217,9 +217,13 @@ pub fn session_end_before_the_will_delay_publishes_the_will() {
     let id = unique_id("wde");
     // The session expires after 1 s, before the Will Delay: the will is due
     // when the session ends.
-    let (c, _) = broker
+    let (c, ack) = broker
         .connect_ok(&with_expiry(&id, 1).will(delayed_will(&t, b"session-over", LONG_WILL_DELAY)))
         .unwrap();
+    if super::connack_u32(&ack, prop::SESSION_EXPIRY_INTERVAL, 1) != 1 {
+        crate::outcome::skipped("broker changed the Session Expiry Interval of 1 s");
+        return;
+    }
     c.abort();
     expect_will_due(
         &mut sub,

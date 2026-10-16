@@ -58,8 +58,10 @@ pub fn foreign_protocol_name_is_not_processed_as_mqtt() {
         let connect = Connect::new(V, &unique_id("name")).protocol(name, 4);
         c.send(&Packet::Connect(Box::new(connect))).unwrap();
         // req: 3.1.1/MQTT-3.1.2-1
-        c.expect_refused(default_timeout())
+        let what = c
+            .expect_foreign_protocol_not_accepted()
             .unwrap_or_else(|e| panic!("protocol name {name:?}: {e}"));
+        crate::outcome::note(format!("protocol name {name:?}: {what}"));
     }
 }
 
@@ -75,6 +77,7 @@ pub fn will_qos_without_will_flag_closes() {
     for flags in [0x0A, 0x12] {
         // req: 3.1.1/MQTT-3.1.2-11
         // req: 3.1.1/MQTT-3.1.2-13
+        // req: 3.1.1/MQTT-3.1.4-1
         assert_connect_closed_without_connack(
             &broker,
             &Connect::new(V, &unique_id("wq")).flags(flags),
@@ -98,6 +101,7 @@ pub fn will_retain_without_will_flag_closes() {
     let broker = broker_or_skip!();
     // req: 3.1.1/MQTT-3.1.2-15
     // req: 3.1.1/MQTT-3.1.2-11
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &Connect::new(V, &unique_id("wr")).flags(0x22));
 }
 
@@ -106,12 +110,14 @@ pub fn will_qos_3_closes() {
     let mut will = Will::new("conformance/will", b"x");
     will.qos = 3;
     // req: 3.1.1/MQTT-3.1.2-14
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &Connect::new(V, &unique_id("w3")).will(will));
 }
 
 pub fn will_flag_without_will_fields_closes() {
     let broker = broker_or_skip!();
     // req: 3.1.1/MQTT-3.1.2-9
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &Connect::new(V, &unique_id("wf")).flags(0x06));
 }
 
@@ -120,12 +126,14 @@ pub fn password_without_username_closes() {
     let connect = Connect::new(V, &unique_id("pw")).password(b"secret");
     assert_eq!(connect.computed_flags(), 0x42);
     // req: 3.1.1/MQTT-3.1.2-22
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &connect);
 }
 
 pub fn username_flag_without_username_closes() {
     let broker = broker_or_skip!();
     // req: 3.1.1/MQTT-3.1.2-19
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &Connect::new(V, &unique_id("uf")).flags(0x82));
 }
 
@@ -135,6 +143,7 @@ pub fn username_present_without_flag_closes() {
         .username("user")
         .flags(0x02);
     // req: 3.1.1/MQTT-3.1.2-18
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &connect);
 }
 
@@ -144,6 +153,7 @@ pub fn password_flag_without_password_closes() {
         .username("user")
         .flags(0xC2);
     // req: 3.1.1/MQTT-3.1.2-21
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &connect);
 }
 
@@ -195,10 +205,18 @@ pub fn ill_formed_utf8_client_id_closes() {
     for id in [&[b'a', 0xC3, 0x28][..], &[0xED, 0xA0, 0x80][..]] {
         let mut c = broker.open(V).unwrap();
         c.send_raw(&raw_connect_with_client_id(id)).unwrap();
+        // A CONNECT that does not conform is closed without CONNACK; 0x02
+        // is only for a client id that "is correct UTF-8 but not allowed".
         // req: 3.1.1/MQTT-1.5.3-1
         // req: 3.1.1/MQTT-3.1.3-4
-        c.expect_refused(default_timeout())
+        // req: 3.1.1/MQTT-3.1.4-1
+        let packets = c
+            .expect_closed(default_timeout())
             .unwrap_or_else(|e| panic!("client id {id:02x?}: {e}"));
+        assert!(
+            packets.is_empty(),
+            "client id {id:02x?} answered with {packets:?}"
+        );
     }
 }
 
@@ -347,10 +365,18 @@ pub fn ill_formed_utf8_will_topic_closes() {
             .bin(b"will");
         let mut c = broker.open(V).unwrap();
         c.send_raw(&w.frame(0x10)).unwrap();
+        // No CONNACK return code applies to a bad Will Topic.
         // req: 3.1.1/MQTT-3.1.3-10
         // req: 3.1.1/MQTT-1.5.3-1
-        c.expect_refused(default_timeout())
+        // req: 3.1.1/MQTT-3.1.4-1
+        // req: 3.1.1/MQTT-3.2.2-6
+        let packets = c
+            .expect_closed(default_timeout())
             .unwrap_or_else(|e| panic!("will topic {topic:02x?}: {e}"));
+        assert!(
+            packets.is_empty(),
+            "will topic {topic:02x?} answered with {packets:?}"
+        );
     }
 }
 
@@ -366,10 +392,16 @@ pub fn ill_formed_utf8_user_name_closes() {
             .bin(name);
         let mut c = broker.open(V).unwrap();
         c.send_raw(&w.frame(0x10)).unwrap();
+        // A close, or CONNACK 0x04 ("The data in the user name or password
+        // is malformed") then a close.
         // req: 3.1.1/MQTT-3.1.3-11
         // req: 3.1.1/MQTT-1.5.3-1
-        c.expect_refused(default_timeout())
+        let ack = c
+            .expect_refused(default_timeout())
             .unwrap_or_else(|e| panic!("user name {name:02x?}: {e}"));
+        if let Some(ack) = ack {
+            assert_eq!(ack.code, 0x04, "user name {name:02x?}: {ack:?}");
+        }
     }
 }
 

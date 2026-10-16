@@ -172,21 +172,27 @@ pub fn empty_topic_name_closes() {
     assert_error_closes(&broker, &w.frame(0x30));
 }
 
-/// Strict: MQTT-4.7.3-2 binds the sender and MQTT-1.5.4-2 lets a receiver close only as a MAY.
+/// U+0000 in a received packet "is a Malformed Packet" (MQTT-1.5.4-2): the
+/// server must close (MQTT-4.13.1-1).
 pub fn null_character_in_topic_name_closes() {
     let broker = broker_or_skip!();
     let mut w = Writer::new();
     w.str("conformance/a\0b").properties(&[]).raw(b"x");
     // req: 5.0/MQTT-4.7.3-2
+    // req: 5.0/MQTT-1.5.4-2
+    // req: 5.0/MQTT-4.13.1-1
     assert_error_closes(&broker, &w.frame(0x30));
 }
 
-/// Strict: MQTT-4.7.3-2 binds the sender and MQTT-1.5.4-2 lets a receiver close only as a MAY.
+/// U+0000 in a received packet "is a Malformed Packet" (MQTT-1.5.4-2): the
+/// server must close (MQTT-4.13.1-1).
 pub fn null_character_in_topic_filter_closes() {
     let broker = broker_or_skip!();
     let mut w = Writer::new();
     w.u16(1).properties(&[]).str("conformance/a\0b").u8(0);
     // req: 5.0/MQTT-4.7.3-2
+    // req: 5.0/MQTT-1.5.4-2
+    // req: 5.0/MQTT-4.13.1-1
     assert_error_closes(&broker, &w.frame(0x82));
 }
 

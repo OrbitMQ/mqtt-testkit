@@ -6,6 +6,7 @@
 
 use crate::{PropValue, Property, Publish, broker_or_skip, default_timeout, prop, quiet_period};
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use super::{connack_u32, props_of, session, session_with_ack, topic};
 
@@ -260,4 +261,50 @@ pub fn subscription_identifier_zero_is_a_protocol_error() {
     // A Subscription Identifier of 0 is a Protocol Error (3.8.2.1.2).
     // req: 5.0/MQTT-4.13.1-1
     c.expect_error_close(default_timeout()).unwrap();
+}
+
+/// Re-subscribing to an identical filter replaces the subscription without
+/// losing messages queued or in flight for it (MQTT-3.8.4-4).
+pub fn replacing_a_subscription_loses_no_message() {
+    let broker = broker_or_skip!();
+    let t = topic();
+    // Receive Maximum 1 keeps the later messages queued at the server.
+    let (mut sub, _) = broker
+        .connect_ok(
+            &crate::Connect::new(super::V, &crate::unique_id("rsl"))
+                .property(prop::RECEIVE_MAXIMUM, PropValue::TwoByte(1)),
+        )
+        .unwrap();
+    sub.subscribe_needing(&t, 1);
+    let mut publisher = session(&broker);
+    let n = 5u8;
+    for i in 0..n {
+        publisher.publish(&t, &[i], 1, false).unwrap();
+    }
+    let first = sub.expect_publish_unacked(default_timeout()).unwrap();
+    // Same filter again: the subscription is replaced while messages wait.
+    sub.subscribe_needing(&t, 1);
+    sub.send(&crate::Packet::PubAck(crate::Ack::new(
+        first.packet_id.unwrap(),
+    )))
+    .unwrap();
+    let mut got = vec![first.payload[0]];
+    let mut distinct: BTreeSet<u8> = got.iter().copied().collect();
+    // No deadline for the rest (a server may release them from a timer);
+    // they must arrive, each acknowledged as it comes.
+    while distinct.len() < usize::from(n) {
+        match sub.expect_publish(Duration::from_secs(15)) {
+            Ok(p) => {
+                got.push(p.payload[0]);
+                distinct.insert(p.payload[0]);
+            }
+            Err(crate::HarnessError::Timeout(_)) => break,
+            Err(e) => panic!("{e}"),
+        }
+    }
+    // req: 5.0/MQTT-3.8.4-4
+    assert_eq!(distinct, (0..n).collect(), "after re-subscribing: {got:?}");
+    if got.len() > usize::from(n) {
+        crate::outcome::note(format!("some messages arrived twice: {got:?}"));
+    }
 }

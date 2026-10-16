@@ -392,6 +392,9 @@ pub fn qos2_messages_from_one_publisher_keep_their_order() {
     ordered(2);
 }
 
+/// Strict: 3.1 ordering binds only an implementation that offers ordering
+/// guarantees ("to provide any guarantees regarding the ordering of messages it
+/// must ensure each stage", §4.3).
 pub fn acknowledgements_follow_the_order_of_the_publishes() {
     let broker = broker_or_skip!();
     let t = topic();

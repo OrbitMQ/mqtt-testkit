@@ -127,10 +127,12 @@ pub fn publish_topic_with_ill_formed_utf8_closes() {
     }
 }
 
-/// Strict: MQTT-3.8.3-3 binds the client; closing relies on MQTT-4.8.0-1.
+/// The spec calls a SUBSCRIBE without filters a protocol violation (MQTT-3.8.3-3),
+/// which the server must close on (MQTT-4.8.0-1).
 pub fn subscribe_without_topic_filters_closes() {
     let broker = broker_or_skip!();
     // req: 3.1.1/MQTT-3.8.3-3
+    // req: 3.1.1/MQTT-4.8.0-1
     assert_violation_closes(&broker, &frame(0x82, &[0x00, 0x01]));
 }
 
@@ -144,10 +146,12 @@ pub fn subscribe_with_invalid_requested_qos_closes() {
     }
 }
 
-/// Strict: MQTT-3.10.3-2 binds the client; closing relies on MQTT-4.8.0-1.
+/// The spec calls an UNSUBSCRIBE without filters a protocol violation
+/// (MQTT-3.10.3-2), which the server must close on (MQTT-4.8.0-1).
 pub fn unsubscribe_without_topic_filters_closes() {
     let broker = broker_or_skip!();
     // req: 3.1.1/MQTT-3.10.3-2
+    // req: 3.1.1/MQTT-4.8.0-1
     assert_violation_closes(&broker, &frame(0xA2, &[0x00, 0x01]));
 }
 

@@ -244,16 +244,10 @@ pub fn connect_publish_subscribe_roundtrip() {
     )))
     .unwrap();
     // req: 3.1.1/MQTT-3.1.2-1
-    let refused = c
-        .expect_refused(default_timeout())
-        .unwrap_or_else(|e| panic!("CONNECT with protocol name \"Bogus\" not refused: {e}"));
-    crate::outcome::note(match refused {
-        Some(ack) => format!(
-            "unknown protocol name: CONNACK {:#04x}, then close",
-            ack.code
-        ),
-        None => "unknown protocol name: closed without CONNACK".to_owned(),
-    });
+    let what = c
+        .expect_foreign_protocol_not_accepted()
+        .unwrap_or_else(|e| panic!("CONNECT with protocol name \"Bogus\": {e}"));
+    crate::outcome::note(format!("unknown protocol name: {what}"));
 }
 
 /// Retained messages published at QoS 0, 1 and 2 are delivered (RETAIN = 1, original QoS) to a

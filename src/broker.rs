@@ -338,6 +338,9 @@ impl Broker {
     pub fn connect_ok(&self, connect: &Connect) -> Result<(Client, ConnAck), HarnessError> {
         let (c, ack) = self.connect(connect)?;
         if ack.code == 0 {
+            if connect.protocol_level == 5 {
+                check_session_expiry(connect, &ack);
+            }
             Ok((c, ack))
         } else if connect.protocol_level == 5
             && let Some(will) = &connect.will
@@ -355,6 +358,27 @@ impl Broker {
                 connect.client_id
             )))
         }
+    }
+}
+
+/// A 5.0 server may answer with a shorter Session Expiry Interval than the
+/// client asked for (§3.2.2.3.2). Cases that keep a session across a
+/// reconnect need it to last a few seconds, so a much shorter one ends the
+/// case as skipped instead of failing it.
+fn check_session_expiry(connect: &Connect, ack: &ConnAck) {
+    use crate::codec::{PropValue, find_prop, prop};
+    let requested = match find_prop(&connect.properties, prop::SESSION_EXPIRY_INTERVAL) {
+        Some(PropValue::FourByte(v)) => *v,
+        _ => 0,
+    };
+    let granted = match find_prop(&ack.properties, prop::SESSION_EXPIRY_INTERVAL) {
+        Some(PropValue::FourByte(v)) => *v,
+        _ => requested,
+    };
+    if granted < requested.min(10) {
+        crate::outcome::skip_now(format!(
+            "broker reduced Session Expiry Interval {requested} to {granted}"
+        ));
     }
 }
 

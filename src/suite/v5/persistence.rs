@@ -235,6 +235,7 @@ pub fn redelivery_keeps_the_original_order() {
             .collect::<Vec<_>>(),
         first.iter().map(|p| p.packet_id).collect::<Vec<_>>()
     );
+    // req: 5.0/MQTT-4.6.0-5
     assert_eq!(
         again.iter().map(|p| p.payload[0]).collect::<Vec<_>>(),
         [0, 1, 2, 3, 4]

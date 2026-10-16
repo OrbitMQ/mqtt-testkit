@@ -20,10 +20,13 @@ pub fn mqisdp_level_3_is_accepted() {
     // req: 3.1/V31-2.2-1
     // req: 3.1/V31-3.2-5
     assert_eq!(ack.code, 0x00);
-    assert_eq!(ack.flags, 0x00, "3.1 CONNACK has no Session Present flag");
+    // The reserved CONNACK byte is checked (as a SHOULD) by
+    // server_sends_unused_bits_as_zero.
     c.ping().unwrap();
 }
 
+/// Strict: the version byte 3 binds the client (V31-2.2-2); for a CONNECT with an
+/// invalid version 3.1 says only that the server should close (V31-3.1-10).
 pub fn mqisdp_with_another_level_is_refused() {
     let broker = broker_or_skip!();
     for level in [4u8, 5, 2] {
@@ -224,13 +227,16 @@ pub fn bad_credentials_are_refused_with_code_4_or_5() {
         "credentials refused with code {}",
         ack.code
     );
-    c.expect_closed(default_timeout()).unwrap();
+    // 3.1 does not require the server to close after a refusal.
+    if c.expect_closed(default_timeout()).is_err() {
+        crate::outcome::note("refused connection left for the client to close");
+    }
 }
 
 pub fn server_sends_unused_bits_as_zero() {
     let broker = broker_or_skip!();
-    // The harness decoder rejects non-zero reserved fixed-header bits in
-    // every packet the broker sends (CONNACK, SUBACK, PUBACK, ...).
+    // The client masks and records unused fixed-header bits in every packet
+    // the broker sends (CONNACK, SUBACK, PUBACK, ...); checked at the end.
     let (mut c, ack) = broker
         .connect(&Connect::new(V, &unique_id("bits")))
         .unwrap();
@@ -251,4 +257,9 @@ pub fn server_sends_unused_bits_as_zero() {
     assert_eq!(got.len(), 2);
     c.unsubscribe(&t).unwrap();
     c.ping().unwrap();
+    // req: 3.1/V31-2.6-1
+    assert!(
+        !c.saw_unused_bits(),
+        "unused fixed-header bits set (see notes)"
+    );
 }

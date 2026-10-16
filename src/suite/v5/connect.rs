@@ -54,10 +54,15 @@ pub fn foreign_protocol_name_is_refused() {
     let broker = broker_or_skip!();
     for name in ["MQTX", "mqtt", "MQIsdp"] {
         let connect = Connect::new(V, &unique_id("name")).protocol(name, 5);
-        // Any non-zero CONNACK (possibly under another protocol's rules),
-        // then a close.
+        let mut c = broker.open(V).unwrap();
+        c.send(&Packet::Connect(Box::new(connect))).unwrap();
+        // A close, a non-zero CONNACK then a close, or silence (the bytes
+        // handled under another protocol); never accepted as MQTT.
         // req: 5.0/MQTT-3.1.2-1
-        refused(&broker, &connect);
+        let what = c
+            .expect_foreign_protocol_not_accepted()
+            .unwrap_or_else(|e| panic!("protocol name {name:?}: {e}"));
+        crate::outcome::note(format!("protocol name {name:?}: {what}"));
     }
 }
 
@@ -73,6 +78,7 @@ pub fn will_qos_without_will_flag_is_refused() {
     let broker = broker_or_skip!();
     for flags in [0x0A, 0x12] {
         // req: 5.0/MQTT-3.1.2-11
+        // req: 5.0/MQTT-3.1.4-1
         refused(&broker, &Connect::new(V, &unique_id("wq")).flags(flags));
     }
 }
@@ -80,6 +86,7 @@ pub fn will_qos_without_will_flag_is_refused() {
 pub fn will_retain_without_will_flag_is_refused() {
     let broker = broker_or_skip!();
     // req: 5.0/MQTT-3.1.2-13
+    // req: 5.0/MQTT-3.1.4-1
     refused(&broker, &Connect::new(V, &unique_id("wr")).flags(0x22));
 }
 
@@ -94,12 +101,14 @@ pub fn will_qos_3_is_refused() {
 pub fn will_flag_without_will_fields_is_refused() {
     let broker = broker_or_skip!();
     // req: 5.0/MQTT-3.1.2-9
+    // req: 5.0/MQTT-3.1.4-1
     refused(&broker, &Connect::new(V, &unique_id("wf")).flags(0x06));
 }
 
 pub fn username_flag_without_username_is_refused() {
     let broker = broker_or_skip!();
     // req: 5.0/MQTT-3.1.2-17
+    // req: 5.0/MQTT-3.1.4-1
     refused(&broker, &Connect::new(V, &unique_id("uf")).flags(0x82));
 }
 
@@ -109,6 +118,7 @@ pub fn username_present_without_flag_is_refused() {
         .username("user")
         .flags(0x02);
     // req: 5.0/MQTT-3.1.2-16
+    // req: 5.0/MQTT-3.1.4-1
     refused(&broker, &connect);
 }
 
@@ -118,6 +128,7 @@ pub fn password_flag_without_password_is_refused() {
         .username("user")
         .flags(0xC2);
     // req: 5.0/MQTT-3.1.2-19
+    // req: 5.0/MQTT-3.1.4-1
     refused(&broker, &connect);
 }
 
@@ -128,6 +139,7 @@ pub fn password_present_without_flag_is_refused() {
         .password(b"pw")
         .flags(0x82);
     // req: 5.0/MQTT-3.1.2-18
+    // req: 5.0/MQTT-3.1.4-1
     refused(&broker, &connect);
 }
 
@@ -318,7 +330,9 @@ pub fn no_authentication_method_or_auth_without_one_in_connect() {
     c.ping().unwrap();
 }
 
-/// Strict: MQTT-4.12.0-7 binds the client; closing relies on the server detecting it (MQTT-4.13.1-1).
+/// "It is a Protocol Error for the Client or Server to send an AUTH packet if the
+/// CONNECT packet did not contain the same Authentication Method" (§3.15): the
+/// server must close (MQTT-4.13.1-1).
 pub fn auth_without_authentication_method_is_a_protocol_error() {
     let broker = broker_or_skip!();
     let mut c = session(&broker);
@@ -328,6 +342,7 @@ pub fn auth_without_authentication_method_is_a_protocol_error() {
     }))
     .unwrap();
     // req: 5.0/MQTT-4.12.0-7
+    // req: 5.0/MQTT-4.13.1-1
     c.expect_error_close(default_timeout()).unwrap();
 }
 
@@ -352,6 +367,7 @@ pub fn connect_without_client_identifier_is_refused() {
     let mut w = Writer::new();
     w.str("MQTT").u8(5).u8(0x02).u16(60).properties(&[]);
     // req: 5.0/MQTT-3.1.3-3
+    // req: 5.0/MQTT-3.1.4-1
     raw_refused(&broker, &w.frame(0x10));
 }
 
@@ -369,6 +385,8 @@ pub fn ill_formed_utf8_will_topic_is_refused() {
             .bin(topic)
             .bin(b"will");
         // req: 5.0/MQTT-3.1.3-11
+        // req: 5.0/MQTT-3.1.4-1
+        // req: 5.0/MQTT-1.5.4-1
         raw_refused(&broker, &w.frame(0x10));
     }
 }
@@ -385,6 +403,8 @@ pub fn ill_formed_utf8_user_name_is_refused() {
             .str(&unique_id("un"))
             .bin(name);
         // req: 5.0/MQTT-3.1.3-12
+        // req: 5.0/MQTT-3.1.4-1
+        // req: 5.0/MQTT-1.5.4-1
         raw_refused(&broker, &w.frame(0x10));
     }
 }
@@ -527,8 +547,10 @@ pub fn reduced_maximum_qos_still_accepts_every_subscription_qos() {
     }
 }
 
-/// Strict: MQTT-3.2.2-11 binds the client; closing relies on detection.
-pub fn publish_above_maximum_qos_is_disconnected_with_0x9b() {
+/// "It is a Protocol Error if the Server receives a PUBLISH packet with a QoS
+/// greater than the Maximum QoS it specified" (§3.2.2.3.4): the server must
+/// close (MQTT-4.13.1-1). 0x9B is the code the spec names; another is noted.
+pub fn publish_above_maximum_qos_closes() {
     let broker = broker_or_skip!();
     let Some(max) = reduced_maximum_qos(&broker) else {
         return;
@@ -540,10 +562,10 @@ pub fn publish_above_maximum_qos_is_disconnected_with_0x9b() {
     // On purpose above the announced Maximum QoS: bypass the harness's gate.
     c.send_raw(&Packet::Publish(p).encode(V)).unwrap();
     // req: 5.0/MQTT-3.2.2-11
+    // req: 5.0/MQTT-4.13.1-1
     let reason = c.expect_error_close(default_timeout()).unwrap();
-    if let Some(r) = reason {
-        // req: 5.0/MQTT-3.2.2-11
-        assert_eq!(r, 0x9B, "QoS not supported");
+    if let Some(r) = reason.filter(|r| *r != 0x9B) {
+        crate::outcome::note(format!("DISCONNECT {r:#04x}, not 0x9B (QoS not supported)"));
     }
 }
 

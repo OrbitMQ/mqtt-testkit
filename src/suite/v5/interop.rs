@@ -422,16 +422,10 @@ pub fn connect_publish_subscribe_roundtrip() {
     c.send(&Packet::Connect(Box::new(connect(&a).protocol("MQTX", 5))))
         .unwrap_or_else(|e| panic!("CONNECT with protocol name MQTX: {e}"));
     // req: 5.0/MQTT-3.1.2-1
-    let refusal = c
-        .expect_refused(default_timeout())
+    let what = c
+        .expect_foreign_protocol_not_accepted()
         .unwrap_or_else(|e| panic!("CONNECT with protocol name MQTX: {e}"));
-    note(match refusal {
-        Some(ack) => format!(
-            "foreign protocol name: CONNACK {:#04x}, then close",
-            ack.code
-        ),
-        None => "foreign protocol name: closed without CONNACK".to_owned(),
-    });
+    note(format!("foreign protocol name: {what}"));
 }
 
 /// Retained messages at QoS 0, 1 and 2, each with two User Properties, are
@@ -1352,7 +1346,12 @@ pub fn inbound_topic_alias_rules() {
     match c.next_event(default_timeout()).unwrap() {
         Event::Packet(Packet::Disconnect(d)) => {
             let r = d.reason.unwrap_or(0);
-            assert!(matches!(r, 0x94 | 0x82), "Topic Alias 0: DISCONNECT {d:?}");
+            // An error code is required; 0x94 is the one the spec names (a
+            // DISCONNECT is itself only a SHOULD, §4.13.1).
+            assert!(r >= 0x80, "Topic Alias 0: DISCONNECT {d:?}");
+            if !matches!(r, 0x94 | 0x82) {
+                note(format!("Topic Alias 0: DISCONNECT {r:#04x}, not 0x94"));
+            }
             c.expect_closed(default_timeout())
                 .unwrap_or_else(|e| panic!("after DISCONNECT {r:#04x}: {e}"));
         }
@@ -1417,13 +1416,32 @@ pub fn inbound_topic_alias_rules() {
     assert_eq!(got.len(), 1, "{got:?}");
     let id = c.next_packet_id();
     c.send(&aliased("", 1, id, b"stale alias")).unwrap();
+    let (packets, closed) = c.packets_until_close(default_timeout()).unwrap();
+    // The old mapping is not used: the stale PUBLISH reaches nobody, not even
+    // this subscriber of the topic it named.
     // req: 5.0/MQTT-3.3.2-7
+    assert!(
+        !packets
+            .iter()
+            .any(|p| matches!(p, Packet::Publish(m) if m.payload == b"stale alias")),
+        "stale Topic Alias resolved: {packets:?}"
+    );
+    // An unmapped alias is a Protocol Error: close, optionally after a
+    // DISCONNECT of 0x80 or above.
     // req: 5.0/MQTT-4.13.1-1
-    let reason = c
-        .expect_error_close(default_timeout())
-        .unwrap_or_else(|e| panic!("unmapped Topic Alias on a new connection: {e}"));
-    if let Some(r) = reason.filter(|r| !matches!(r, 0x82 | 0x94)) {
-        note(format!("unmapped Topic Alias: DISCONNECT {r:#04x}"));
+    assert!(
+        closed,
+        "unmapped Topic Alias on a new connection: still open ({packets:?})"
+    );
+    for p in &packets {
+        match p {
+            Packet::Disconnect(d) if d.reason.unwrap_or(0) >= 0x80 => {
+                if let Some(r) = d.reason.filter(|r| !matches!(r, 0x82 | 0x94)) {
+                    note(format!("unmapped Topic Alias: DISCONNECT {r:#04x}"));
+                }
+            }
+            other => panic!("unmapped Topic Alias: {other:?} before the close"),
+        }
     }
 }
 
@@ -1511,7 +1529,7 @@ pub fn outbound_topic_alias_respects_client_maximum() {
 
 /// Part 1 of the Maximum Packet Size scenario: a PUBLISH larger than the
 /// broker's limit. Detection is strict tier in the main suite, so a broker
-/// that keeps the connection is noted; a DISCONNECT must carry 0x95.
+/// that keeps the connection is noted; a DISCONNECT other than 0x95 is noted.
 fn server_limit_part(broker: &Broker, t: &Topics) {
     let (mut c, ack) = open(broker, &connect(&unique_id("a5")));
     let limit = connack_u32(&ack, prop::MAXIMUM_PACKET_SIZE, crate::codec::VARINT_MAX);
@@ -1530,8 +1548,13 @@ fn server_limit_part(broker: &Broker, t: &Topics) {
         let left = deadline.saturating_duration_since(Instant::now());
         match c.next_event(left) {
             Ok(Event::Packet(Packet::Disconnect(d))) => {
-                // req: 5.0/MQTT-3.2.2-15
-                assert_eq!(d.reason, Some(0x95), "oversized PUBLISH: {d:?}");
+                // An error code is required; 0x95 is the one the spec names
+                // (a DISCONNECT is itself only a SHOULD, §4.13.1).
+                let r = d.reason.unwrap_or(0);
+                assert!(r >= 0x80, "oversized PUBLISH: {d:?}");
+                if r != 0x95 {
+                    note(format!("oversized PUBLISH: DISCONNECT {r:#04x}, not 0x95"));
+                }
             }
             Ok(Event::Closed) | Err(HarnessError::Io(_) | HarnessError::Closed(_)) => return,
             Ok(Event::Timeout) => {
@@ -1930,7 +1953,8 @@ pub fn shared_subscription_single_delivery() {
     );
     publish_with(&mut cb, &t.ts, b"one of you", 0, false, &[]);
     let (at_a, at_b) = receive_both(&mut ca, &mut cb, default_timeout(), |a, b| a + b >= 1);
-    // req: 5.0/MQTT-4.5.0-1
+    // "only sent to one of its subscribing Sessions" is unnumbered §4.8.2
+    // prose; no numbered statement is cited, so a failure here marks none.
     assert_eq!(
         at_a.len() + at_b.len(),
         1,

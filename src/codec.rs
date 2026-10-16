@@ -945,12 +945,96 @@ pub fn decode(buf: &[u8], version: Version) -> Result<Option<(Packet, usize)>, C
     let Some(body) = buf.get(1 + n..total) else {
         return Ok(None);
     };
-    let packet = decode_body(first, body, version).map_err(|e| {
-        let bytes = buf.get(..total.min(32)).unwrap_or(&[]);
-        let more = if total > 32 { " .." } else { "" };
-        CodecError(format!("{} (bytes {bytes:02x?}{more})", e.0))
-    })?;
+    let packet = decode_body(first, body, version)
+        .and_then(|p| {
+            if version.is_v5() {
+                check_v5_properties(&p)?;
+            }
+            Ok(p)
+        })
+        .map_err(|e| {
+            let bytes = buf.get(..total.min(32)).unwrap_or(&[]);
+            let more = if total > 32 { " .." } else { "" };
+            CodecError(format!("{} (bytes {bytes:02x?}{more})", e.0))
+        })?;
     Ok(Some((packet, total)))
+}
+
+/// Packets whose properties [`check_v5_properties`] validates: those a 5.0
+/// server sends (CONNECT, SUBSCRIBE and UNSUBSCRIBE are client packets).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PropCtx {
+    ConnAck,
+    Publish,
+    Ack,
+    SubAck,
+    Disconnect,
+    Auth,
+}
+
+/// Whether property `id` may appear in a packet of kind `ctx` (5.0 Table 2-4).
+const fn property_allowed(id: u8, ctx: PropCtx) -> bool {
+    use PropCtx::{Auth, ConnAck, Disconnect, Publish};
+    match id {
+        0x26 => true,
+        0x01 | 0x02 | 0x03 | 0x08 | 0x09 | 0x0B | 0x23 => matches!(ctx, Publish),
+        0x11 | 0x1C => matches!(ctx, ConnAck | Disconnect),
+        0x15 | 0x16 => matches!(ctx, ConnAck | Auth),
+        0x12 | 0x13 | 0x1A | 0x21 | 0x22 | 0x24 | 0x25 | 0x27 | 0x28 | 0x29 | 0x2A => {
+            matches!(ctx, ConnAck)
+        }
+        0x1F => !matches!(ctx, Publish),
+        _ => false,
+    }
+}
+
+/// Checks the properties of a packet a 5.0 server sent: each identifier valid
+/// for the packet type and present at most once (User Property, and
+/// Subscription Identifier in PUBLISH, may repeat), Subscription Identifier
+/// non-zero, and the 0/1 and non-zero value ranges the spec fixes
+/// (§2.2.2.2, §3.2.2.3, §3.3.2.3). A violation is a Malformed Packet or a
+/// Protocol Error on the server's part.
+fn check_v5_properties(packet: &Packet) -> Result<(), CodecError> {
+    let (ctx, props) = match packet {
+        Packet::ConnAck(c) => (PropCtx::ConnAck, &c.properties),
+        Packet::Publish(p) => (PropCtx::Publish, &p.properties),
+        Packet::PubAck(a) | Packet::PubRec(a) | Packet::PubRel(a) | Packet::PubComp(a) => {
+            (PropCtx::Ack, &a.properties)
+        }
+        Packet::SubAck(a) | Packet::UnsubAck(a) => (PropCtx::SubAck, &a.properties),
+        Packet::Disconnect(d) => (PropCtx::Disconnect, &d.properties),
+        Packet::Auth(a) => (PropCtx::Auth, &a.properties),
+        _ => return Ok(()),
+    };
+    let name = packet.name();
+    let mut seen = [false; 0x2B];
+    for p in props {
+        if !property_allowed(p.id, ctx) {
+            return malformed(format!("property {:#04x} is not valid in {name}", p.id));
+        }
+        let repeatable = p.id == 0x26 || (p.id == 0x0B && ctx == PropCtx::Publish);
+        let slot = seen.get_mut(usize::from(p.id));
+        match slot {
+            Some(s) if *s && !repeatable => {
+                return malformed(format!("property {:#04x} more than once in {name}", p.id));
+            }
+            Some(s) => *s = true,
+            None => {}
+        }
+        match (p.id, &p.value) {
+            (0x0B, PropValue::VarInt(0)) => {
+                return malformed(format!("Subscription Identifier 0 in {name}"));
+            }
+            (0x01 | 0x25 | 0x28 | 0x29 | 0x2A, PropValue::Byte(v)) if *v > 1 => {
+                return malformed(format!("property {:#04x} = {v} in {name} (0 or 1)", p.id));
+            }
+            (0x21, PropValue::TwoByte(0)) | (0x27, PropValue::FourByte(0)) => {
+                return malformed(format!("property {:#04x} = 0 in {name}", p.id));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn expect_flags(first: u8, allowed: &[u8], name: &str) -> Result<(), CodecError> {
@@ -1006,6 +1090,16 @@ fn decode_body(first: u8, body: &[u8], version: Version) -> Result<Packet, Codec
             }
             let topic = r.str()?;
             let packet_id = if qos > 0 { Some(r.u16()?) } else { None };
+            // 3.1.1 MQTT-2.3.1-1 / 5.0 MQTT-2.2.1-3: a non-zero identifier;
+            // MQTT-3.3.1-2: DUP 0 at QoS 0 (3.1 only describes these).
+            if version != Version::V31 {
+                if packet_id == Some(0) {
+                    return malformed("PUBLISH with QoS > 0 and Packet Identifier 0");
+                }
+                if qos == 0 && first & 0x08 != 0 {
+                    return malformed("PUBLISH with QoS 0 and DUP 1");
+                }
+            }
             let properties = if v5 { r.properties()? } else { Vec::new() };
             Packet::Publish(Publish {
                 dup: first & 0x08 != 0,
@@ -1220,11 +1314,70 @@ mod tests {
     }
 
     #[test]
+    fn v5_properties_are_checked_against_the_packet_type() {
+        let decode5 = |p: &Packet| decode(&p.encode(Version::V5), Version::V5);
+        let with = |id, value| ConnAck {
+            flags: 0,
+            code: 0,
+            properties: vec![Property::new(id, value)],
+        };
+        // Topic Alias belongs to PUBLISH only.
+        assert!(
+            decode5(&Packet::ConnAck(with(
+                prop::TOPIC_ALIAS,
+                PropValue::TwoByte(1)
+            )))
+            .is_err()
+        );
+        // Retain Available is 0 or 1.
+        assert!(
+            decode5(&Packet::ConnAck(with(
+                prop::RETAIN_AVAILABLE,
+                PropValue::Byte(2)
+            )))
+            .is_err()
+        );
+        assert!(
+            decode5(&Packet::ConnAck(with(
+                prop::RETAIN_AVAILABLE,
+                PropValue::Byte(1)
+            )))
+            .is_ok()
+        );
+        // A single-instance property twice.
+        let mut twice = with(prop::SERVER_KEEP_ALIVE, PropValue::TwoByte(5));
+        twice.properties.push(twice.properties[0].clone());
+        assert!(decode5(&Packet::ConnAck(twice)).is_err());
+        // Subscription Identifier 0 in PUBLISH.
+        let mut p = Publish::new("t", b"x");
+        p.properties = vec![Property::new(
+            prop::SUBSCRIPTION_IDENTIFIER,
+            PropValue::VarInt(0),
+        )];
+        assert!(decode5(&Packet::Publish(p)).is_err());
+        // Packet Identifier 0 at QoS 1, and DUP at QoS 0 (3.1.1 and 5.0).
+        for v in [Version::V311, Version::V5] {
+            let mut p = Publish::new("t", b"x");
+            p.qos = 1;
+            p.packet_id = Some(0);
+            assert!(decode(&Packet::Publish(p).encode(v), v).is_err());
+            let mut p = Publish::new("t", b"x");
+            p.dup = true;
+            assert!(decode(&Packet::Publish(p).encode(v), v).is_err());
+        }
+    }
+
+    #[test]
     fn roundtrip_all_packets() {
+        // Valid in every server packet but PUBLISH (5.0 Table 2-4).
         let props = vec![
             Property::new(prop::REASON_STRING, PropValue::Str("why".into())),
             Property::new(prop::USER_PROPERTY, PropValue::Pair("k".into(), "v".into())),
+        ];
+        let publish_props = vec![
+            Property::new(prop::USER_PROPERTY, PropValue::Pair("k".into(), "v".into())),
             Property::new(prop::SUBSCRIPTION_IDENTIFIER, PropValue::VarInt(300)),
+            Property::new(prop::SUBSCRIPTION_IDENTIFIER, PropValue::VarInt(7)),
         ];
         for v in [Version::V31, Version::V311, Version::V5] {
             let p = |x: &Vec<Property>| if v.is_v5() { x.clone() } else { Vec::new() };
@@ -1253,7 +1406,7 @@ mod tests {
             publ.dup = true;
             publ.retain = true;
             publ.packet_id = Some(9);
-            publ.properties = p(&props);
+            publ.properties = p(&publish_props);
             roundtrip(&Packet::Publish(publ), v);
             let ack = if v.is_v5() {
                 Ack {

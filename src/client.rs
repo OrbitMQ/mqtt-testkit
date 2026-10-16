@@ -50,6 +50,8 @@ pub struct Client {
     /// What the broker announced in a successful 5.0 CONNACK on this
     /// connection, if any.
     limits: Option<Limits>,
+    /// Whether a 3.1 server set fixed-header bits 3.1 marks unused.
+    unused_bits: bool,
 }
 
 /// Capabilities a 5.0 server announces in CONNACK (spec defaults when absent).
@@ -126,6 +128,7 @@ impl Client {
             next_id: 0,
             stash: VecDeque::new(),
             limits: None,
+            unused_bits: false,
         }
     }
 
@@ -222,6 +225,34 @@ impl Client {
         }
     }
 
+    /// In 3.1, the DUP / QoS / RETAIN bits of CONNACK, PUBACK, PUBREC,
+    /// PUBCOMP, SUBACK, UNSUBACK and PINGRESP are "Not used", and unused bits
+    /// only "should be set to zero" (§2.6). Clears them before decoding, so
+    /// such a packet does not fail an unrelated case, and records that they
+    /// were set (see [`Client::saw_unused_bits`]).
+    fn mask_unused_v31_bits(&mut self) {
+        if self.version != Version::V31 {
+            return;
+        }
+        if let Some(first) = self.buf.first_mut()
+            && matches!(*first >> 4, 2 | 4 | 5 | 7 | 9 | 11 | 13)
+            && *first & 0x0F != 0
+        {
+            crate::outcome::note(format!(
+                "3.1 server set unused fixed-header bits: {:#04x}",
+                *first
+            ));
+            *first &= 0xF0;
+            self.unused_bits = true;
+        }
+    }
+
+    /// Whether a 3.1 server set unused fixed-header bits on this connection.
+    #[must_use]
+    pub const fn saw_unused_bits(&self) -> bool {
+        self.unused_bits
+    }
+
     /// Reads the next event (packet, close or timeout).
     pub fn next_event(&mut self, timeout: Duration) -> Result<Event, HarnessError> {
         if let Some(p) = self.stash.pop_front() {
@@ -229,6 +260,7 @@ impl Client {
         }
         let deadline = Instant::now() + timeout;
         loop {
+            self.mask_unused_v31_bits();
             if let Some((p, n)) = codec::decode(&self.buf, self.version)? {
                 self.buf.drain(..n);
                 return Ok(Event::Packet(p));
@@ -329,6 +361,27 @@ impl Client {
                 Event::Closed => return Ok((seen, true)),
                 Event::Timeout => return Ok((seen, false)),
             }
+        }
+    }
+
+    /// After a CONNECT with a foreign protocol name. The server MAY close, MAY
+    /// refuse with a non-zero CONNACK (and then MUST close), or MAY treat the
+    /// bytes under another protocol and say nothing; it MUST NOT accept them
+    /// as MQTT (MQTT-3.1.2-1). Returns a description of what it did.
+    pub fn expect_foreign_protocol_not_accepted(&mut self) -> Result<String, HarnessError> {
+        let (packets, closed) = self.packets_until_close(default_timeout())?;
+        match packets.as_slice() {
+            [] if closed => Ok("closed without CONNACK".to_owned()),
+            [] => Ok("left the connection open without answering".to_owned()),
+            [Packet::ConnAck(a)] if a.code != 0 => {
+                if !closed {
+                    self.expect_closed_eventually()?;
+                }
+                Ok(format!("CONNACK {:#04x}, then close", a.code))
+            }
+            other => Err(HarnessError::Unexpected(format!(
+                "processed as MQTT: {other:?}"
+            ))),
         }
     }
 

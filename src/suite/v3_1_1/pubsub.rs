@@ -440,6 +440,8 @@ pub fn qos2_messages_from_one_publisher_keep_their_order() {
     ordered(2);
 }
 
+/// Strict: MQTT-4.6.0-2/-3 bind "a Client"; the server takes on §4.6 only "when
+/// delivering messages to each of its subscribers", where it sends no PUBACK/PUBREC.
 pub fn acknowledgements_follow_the_order_of_the_publishes() {
     let broker = broker_or_skip!();
     let t = topic();
