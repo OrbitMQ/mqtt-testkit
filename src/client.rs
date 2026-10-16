@@ -260,18 +260,67 @@ impl Client {
         }
     }
 
+    /// Like [`Client::expect_closed`], for a close the spec requires without
+    /// a deadline: waits up to 30 s and notes a close that came after
+    /// [`default_timeout`] (for example when a server ignores a packet and
+    /// closes at its own idle or CONNECT timeout).
+    pub fn expect_closed_eventually(&mut self) -> Result<Vec<Packet>, HarnessError> {
+        let started = Instant::now();
+        let packets = self.expect_closed(Duration::from_secs(30))?;
+        let took = started.elapsed();
+        if took > default_timeout() {
+            crate::outcome::note(format!("connection closed after {took:.1?}"));
+        }
+        Ok(packets)
+    }
+
     /// Waits for the broker to end the connection, allowing (in 5.0) a
     /// DISCONNECT first. Returns its reason code, `None` for a bare close.
-    /// Any other packet is an error.
+    /// In 3.x, where a server never sends DISCONNECT, a 5.0-style one before
+    /// the close is noted and otherwise treated as a bare close: it is not an
+    /// answer to the client's packet. Any other packet is an error.
     pub fn expect_disconnect(&mut self, timeout: Duration) -> Result<Option<u8>, HarnessError> {
         let packets = self.expect_closed(timeout)?;
         match packets.as_slice() {
             [] => Ok(None),
             [Packet::Disconnect(d)] if self.version.is_v5() => Ok(Some(d.reason.unwrap_or(0))),
+            [Packet::Disconnect(d)] => {
+                self.note_v3_disconnect(d.reason);
+                Ok(None)
+            }
             other => Err(HarnessError::Unexpected(format!(
                 "expected only a close (or a 5.0 DISCONNECT), got {other:?}"
             ))),
         }
+    }
+
+    /// Like [`Client::next_event`], except that in 3.x a DISCONNECT followed
+    /// by the close is noted and reported as [`Event::Closed`] (see
+    /// [`Client::expect_disconnect`]).
+    pub fn next_event_or_close(&mut self, timeout: Duration) -> Result<Event, HarnessError> {
+        match self.next_event(timeout)? {
+            Event::Packet(Packet::Disconnect(d)) if !self.version.is_v5() => {
+                match self.next_event(default_timeout())? {
+                    Event::Closed => {
+                        self.note_v3_disconnect(d.reason);
+                        Ok(Event::Closed)
+                    }
+                    other => Err(HarnessError::Unexpected(format!(
+                        "DISCONNECT {d:?}, then {other:?} instead of a close"
+                    ))),
+                }
+            }
+            e => Ok(e),
+        }
+    }
+
+    fn note_v3_disconnect(&self, reason: Option<u8>) {
+        let reason = reason.map_or_else(|| "none".to_owned(), |r| format!("{r:#04x}"));
+        crate::outcome::note(format!(
+            "server sent an MQTT {} client a DISCONNECT (reason {reason}) before closing; \
+             3.x defines none from the server",
+            self.version
+        ));
     }
 
     /// Waits for the broker to close the connection because of an error the
@@ -496,6 +545,33 @@ impl Client {
                 }
             }
         }
+    }
+
+    /// Waits for up to `n` PUBLISH packets without acknowledging them: the first
+    /// within `timeout`, each further one within [`crate::quiet_period`]. A
+    /// server may keep fewer messages in flight than the client allows (down
+    /// to one at a time), so fewer than `n` is not an error; the caller
+    /// adapts, and a note records how many were in flight.
+    pub fn expect_in_flight(
+        &mut self,
+        n: usize,
+        timeout: Duration,
+    ) -> Result<Vec<Publish>, HarnessError> {
+        let mut out = vec![self.expect_publish_unacked(timeout)?];
+        while out.len() < n {
+            match self.expect_publish_unacked(crate::quiet_period()) {
+                Ok(p) => out.push(p),
+                Err(HarnessError::Timeout(_)) => {
+                    crate::outcome::note(format!(
+                        "server kept {} of {n} QoS>0 messages in flight",
+                        out.len()
+                    ));
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
     }
 
     /// Collects every PUBLISH that arrives within `window`, acknowledging

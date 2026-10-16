@@ -197,7 +197,17 @@ pub fn interrupted_qos2_shared_delivery_resumes_on_the_same_client() {
     let filter = format!("$share/{}/{t}", group());
     let id = unique_id("sh4");
     let (mut a, _) = persistent(&broker, &id);
-    a.subscribe(&filter, 2).unwrap();
+    let granted = a.subscribe(&filter, 2).unwrap().codes;
+    if granted != [2] {
+        // A server may grant less than QoS 2; a QoS 1 delivery is not bound
+        // by MQTT-4.8.2-4/5.
+        crate::outcome::skipped(format!(
+            "shared subscription granted {granted:02x?}, not QoS 2"
+        ));
+        a.abort();
+        forget(&broker, &id);
+        return;
+    }
     let mut publisher = session(&broker);
     publisher.publish(&t, b"exactly-a", 2, false).unwrap();
     let first = a.expect_publish_unacked(default_timeout()).unwrap();
@@ -237,7 +247,16 @@ pub fn interrupted_qos2_shared_delivery_is_not_redirected_when_the_session_ends(
     let filter = format!("$share/{}/{t}", group());
     // Session Expiry Interval 0: the session ends with the connection.
     let mut a = session(&broker);
-    a.subscribe(&filter, 2).unwrap();
+    let granted = a.subscribe(&filter, 2).unwrap().codes;
+    if granted != [2] {
+        // A server may grant less than QoS 2; a QoS 1 delivery is not bound
+        // by MQTT-4.8.2-4/5.
+        crate::outcome::skipped(format!(
+            "shared subscription granted {granted:02x?}, not QoS 2"
+        ));
+        a.abort();
+        return;
+    }
     let mut publisher = session(&broker);
     publisher.publish(&t, b"lost-with-a", 2, false).unwrap();
     a.expect_publish_unacked(default_timeout()).unwrap();
@@ -271,6 +290,14 @@ fn reject_everything(members: &mut [Client]) -> Vec<Vec<u8>> {
                     m.send(&reply).unwrap();
                     got.push(p.payload);
                     last = Instant::now();
+                }
+                // Not required after PUBREC 0x80 (MQTT-4.3.3-4), not forbidden.
+                Event::Packet(Packet::PubRel(a)) => {
+                    crate::outcome::note(format!(
+                        "PUBREL {} sent after the client's PUBREC 0x80",
+                        a.packet_id
+                    ));
+                    m.send(&Packet::PubComp(Ack::new(a.packet_id))).unwrap();
                 }
                 Event::Timeout => {}
                 other => panic!("expected a PUBLISH, got {other:?}"),

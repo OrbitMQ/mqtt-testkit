@@ -28,6 +28,25 @@ pub fn mqisdp_with_another_level_is_refused() {
     let broker = broker_or_skip!();
     for level in [4u8, 5, 2] {
         let connect = Connect::new(V, &unique_id("lvl")).protocol("MQIsdp", level);
+        if level == 5 {
+            // Level 5 (sent with a 5.0 Property Length) may be read as a 5.0
+            // CONNECT with a foreign protocol name, which a 5.0 server may
+            // refuse with a 5.0 CONNACK and any error code (MQTT-3.1.2-1).
+            let mut c = broker.open(crate::Version::V5).unwrap();
+            c.send(&Packet::Connect(Box::new(connect.clone()))).unwrap();
+            // req: 3.1/V31-2.2-2
+            // req: 3.1/V31-3.1-10
+            let ack = c
+                .expect_refused(default_timeout())
+                .unwrap_or_else(|e| panic!("CONNECT {connect:?}: {e}"));
+            if let Some(ack) = ack {
+                crate::outcome::note(format!(
+                    "MQIsdp level 5 refused with code {:#04x}",
+                    ack.code
+                ));
+            }
+            continue;
+        }
         // req: 3.1/V31-2.2-2
         // req: 3.1/V31-3.1-10
         if let Some(ack) = refused(&broker, &connect) {
@@ -133,8 +152,9 @@ pub fn first_packet_other_than_connect_closes() {
     for packet in [Packet::PingReq, Packet::Publish(publish)] {
         let mut c = broker.open(V).unwrap();
         c.send(&packet).unwrap();
+        // No deadline for the close: a server may act only at its CONNECT timeout.
         // req: 3.1/V31-3.1-1
-        let packets = c.expect_closed(default_timeout()).unwrap();
+        let packets = c.expect_closed_eventually().unwrap();
         assert!(
             packets.is_empty(),
             "{} answered with {packets:?}",

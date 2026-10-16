@@ -460,9 +460,9 @@ pub fn in_flight_deliveries_use_distinct_packet_identifiers() {
         publisher.publish(&t, &[i], 1, false).unwrap();
     }
     let mut ids = HashSet::new();
-    for _ in 0..5 {
-        // Not acknowledged, so every identifier stays in use.
-        let p = sub.expect_publish_unacked(default_timeout()).unwrap();
+    // Not acknowledged, so every identifier stays in use.
+    let got = sub.expect_in_flight(5, default_timeout()).unwrap();
+    for p in &got {
         let id = p.packet_id.unwrap();
         // req: 5.0/MQTT-4.3.2-1
         // req: 5.0/MQTT-4.3.2-2
@@ -470,6 +470,11 @@ pub fn in_flight_deliveries_use_distinct_packet_identifiers() {
         assert!(
             id != 0 && ids.insert(id),
             "reused or zero id {id} in {ids:?}"
+        );
+    }
+    if got.len() < 2 {
+        crate::outcome::skipped(
+            "server keeps one QoS>0 message in flight: no identifiers to compare",
         );
     }
 }
@@ -640,9 +645,24 @@ pub fn qos2_identifier_stays_in_use_until_pubcomp() {
     for i in 0..5u8 {
         publisher.publish(&t, &[i], 2, false).unwrap();
     }
+    let Ok(first) = sub.expect_publish_unacked(quiet_period()) else {
+        // A server may hold further messages until this flow completes; then
+        // identifier reuse cannot be observed, but the messages must follow.
+        sub.send(&Packet::PubComp(Ack::new(held_id))).unwrap();
+        assert_eq!(sub.expect_publishes(5, default_timeout()).unwrap().len(), 5);
+        crate::outcome::skipped("server sends the next QoS 2 message only after PUBCOMP");
+        return;
+    };
+    let mut got = vec![first];
+    while got.len() < 5 {
+        match sub.expect_publish_unacked(quiet_period()) {
+            Ok(p) => got.push(p),
+            Err(crate::HarnessError::Timeout(_)) => break,
+            Err(e) => panic!("{e}"),
+        }
+    }
     let mut ids = HashSet::from([held_id]);
-    for _ in 0..5 {
-        let p = sub.expect_publish_unacked(default_timeout()).unwrap();
+    for p in &got {
         let id = p.packet_id.unwrap();
         // req: 5.0/MQTT-2.2.1-4
         assert!(

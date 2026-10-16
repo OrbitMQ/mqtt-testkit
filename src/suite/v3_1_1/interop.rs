@@ -524,15 +524,10 @@ pub fn resend_unacknowledged_on_session_resume() {
     let (t1, t3) = (tree.t1(), tree.t3());
     b.publish(&t1, b"", 1, false).unwrap();
     b.publish(&t3, b"", 2, false).unwrap();
-    let mut ignored = Vec::new();
-    while ignored.len() < 2 {
-        let p = b
-            .expect_publish_unacked(default_timeout())
-            .unwrap_or_else(|e| {
-                panic!("own publishes not forwarded before going offline ({ignored:?}): {e}")
-            });
-        ignored.push(p);
-    }
+    // A server may keep only one of them in flight, the other queued.
+    let ignored = b
+        .expect_in_flight(2, default_timeout())
+        .unwrap_or_else(|e| panic!("own publishes not forwarded before going offline: {e}"));
     disconnect(b);
 
     let (mut b, present) = connect(&broker, &id, false);
@@ -548,7 +543,15 @@ pub fn resend_unacknowledged_on_session_resume() {
         "expected the 2 unacknowledged messages, got {got:?}"
     );
     for (t, qos) in [(&t1, 1u8), (&t3, 2)] {
-        let first = ignored.iter().find(|p| &p.topic == t).unwrap();
+        let Some(first) = ignored.iter().find(|p| &p.topic == t) else {
+            // Never sent before going offline: delivered now as a new message.
+            assert!(
+                got.iter().any(|p| &p.topic == t),
+                "{t} lost: {:?}",
+                topics(&got)
+            );
+            continue;
+        };
         let again = got
             .iter()
             .find(|p| &p.topic == t)

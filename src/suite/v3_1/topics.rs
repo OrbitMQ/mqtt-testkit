@@ -121,7 +121,7 @@ pub fn invalid_topic_filters_are_rejected() {
         // reacts to an invalid filter. Allowed: closing the connection, or a
         // "normal-looking" SUBACK (as for unauthorised subscriptions,
         // V31-3.8-7) that must not carry the 3.1.1 code 0x80.
-        match c.next_event(default_timeout()).unwrap() {
+        match c.next_event_or_close(default_timeout()).unwrap() {
             crate::Event::Packet(Packet::SubAck(s)) => {
                 // req: 3.1/V31-3.9-3
                 assert!(
@@ -145,7 +145,7 @@ pub fn empty_topic_filter_is_rejected() {
         filters: vec![(String::new(), 0)],
     }))
     .unwrap();
-    match c.next_event(default_timeout()).unwrap() {
+    match c.next_event_or_close(default_timeout()).unwrap() {
         crate::Event::Packet(Packet::SubAck(s)) => {
             // req: 3.1/V31-3.9-3
             // 3.1: no failure code exists (see `invalid_topic_filters_are_rejected`).
@@ -331,7 +331,7 @@ pub fn misplaced_wildcards_never_match() {
             filters: vec![(filter.clone(), 0)],
         }))
         .unwrap();
-        match c.next_event(default_timeout()).unwrap() {
+        match c.next_event_or_close(default_timeout()).unwrap() {
             crate::Event::Packet(Packet::SubAck(_)) => subs.push((*is_hash, filter, c)),
             crate::Event::Closed => {}
             other => panic!("filter {filter:?}: {other:?}"),

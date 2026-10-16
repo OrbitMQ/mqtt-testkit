@@ -163,12 +163,31 @@ Where the specification allows several behaviours, the cases accept all of them.
   - 3.1 client id too long or empty (code 2)
 
   In 3.1.1, an invalid CONNECT must close *without* CONNACK (MQTT-3.1.4-1), so those cases reject any CONNACK.
+  A case that needs a refusal only as a precondition (data sent after a refused CONNECT, the CONNACK code
+  table, a refusing CONNACK's size) skips that refusal when the broker accepts the CONNECT; the case that
+  owns the refusal reports it.
 - **Unknown protocol level or name (5.0 cases).** A multi-version server may answer a CONNECT that is not
   `MQTT` level 5 under another version's rules. Level ≠ 5 may get CONNACK 0x84 or a 3.x-style 0x01; a foreign
   protocol name may get any non-zero code. The close is always mandatory. Levels 0–2 with `MQTT` are tested
-  under 3.1.1 rules (CONNACK 0x01).
+  under 3.1.1 rules (CONNACK 0x01): a 3.1.1 CONNACK 0x01 satisfies both specifications, a 5.0 CONNACK 0x84
+  does not satisfy MQTT-3.1.2-2 of 3.1.1. A 3.1 `MQIsdp` CONNECT with level 5 (sent with a Property Length)
+  may be answered as a 5.0 CONNECT with a foreign name: a 5.0 CONNACK with any error code, then the close.
 - **5.0 DISCONNECT before close** is optional. If present, it must carry a reason code ≥ 0x80, from the
   DISCONNECT table. For a session takeover it must be 0x8E. After a DISCONNECT the server sends nothing more.
+  An unmapped Topic Alias needs only the close; any error code may come with it.
+- **DISCONNECT to a 3.x client.** 3.x has no server-to-client DISCONNECT. Where a case requires a close, a
+  5.0-style DISCONNECT immediately before it is noted, not failed: it does not answer the client's packet.
+- **No deadline for a close.** When the first packet is not CONNECT, the close may come at the server's own
+  CONNECT timeout; the case waits up to 30 s and notes a late close.
+- **In-flight window.** A server may keep fewer QoS > 0 messages in flight than the client's Receive Maximum
+  allows, down to one at a time. Cases read what is in flight and acknowledge to get the rest; a check that
+  needs two messages in flight at once (distinct identifiers, PUBREL order, unsubscribing two started
+  deliveries) skips when the server sends one at a time. A delivery released by a timer after the window
+  frees is accepted, but it is a first transmission (DUP = 0).
+- **PUBREL after PUBREC ≥ 0x80** is not required (MQTT-4.3.3-4 asks for one only below 0x80) and not
+  forbidden; it is answered with PUBCOMP and noted.
+- **Shared subscriptions at QoS 2.** A server may grant QoS 1 on a shared subscription; the interrupted
+  QoS 2 delivery cases (MQTT-4.8.2-4/5) skip then.
 - **Variable Byte Integers** (5.0 MQTT-1.5.5-1) bind the encoder: the server's own remaining lengths and
   property lengths must be minimal. Rejecting a client's non-minimal encoding is strict tier.
 - **Ill-formed UTF-8** in any string field is a Malformed Packet (3.1.1 MQTT-1.5.3-1, 5.0 MQTT-1.5.4-1): the
@@ -201,8 +220,9 @@ Where the specification allows several behaviours, the cases accept all of them.
   PUBREC ≥ 0x80).
 - **Authorization probes**: `$SYS/conformance/<id>` is used to look for a topic the broker does not
   authorize; if the message gets through, the case skips. 3.1.1 accepts a PUBACK or a close; 3.1 requires a
-  normal PUBACK and SUBACK. Cases that send credentials skip if the broker refuses them; a 3.1 refusal must
-  be CONNACK 4 or 5.
+  normal PUBACK and SUBACK. If a PUBLISH to any `$` topic is refused, not only to `$SYS`, the broker
+  applies a reserved-topic rule (3.1.1 §4.7.2), not an authorization decision, and the 3.1 case skips.
+  Cases that send credentials skip if the broker refuses them; a 3.1 refusal must be CONNACK 4 or 5.
 - **Empty client id (5.0)**: a server may refuse it (0x85 then close, or a bare close); the assigned-id cases
   skip then.
 - **Payload Format Indicator 0** may be forwarded as absent, since absent means 0.

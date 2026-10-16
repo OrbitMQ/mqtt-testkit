@@ -33,15 +33,13 @@ fn session(broker: &Broker) -> Client {
 }
 
 /// Connects, sends `bytes` and requires the broker to close the connection
-/// without answering.
+/// without answering (a DISCONNECT before the close is noted, see
+/// [`crate::Client::expect_disconnect`]).
 fn assert_violation_closes(broker: &Broker, bytes: &[u8]) {
     let mut c = session(broker);
     c.send_raw(bytes).unwrap();
-    let packets = c.expect_closed(default_timeout()).unwrap();
-    assert!(
-        packets.is_empty(),
-        "broker answered {bytes:02x?} with {packets:?} instead of closing"
-    );
+    c.expect_disconnect(default_timeout())
+        .unwrap_or_else(|e| panic!("after {bytes:02x?}: {e}"));
 }
 
 /// Sends `connect` on a fresh connection and returns the CONNACK of a

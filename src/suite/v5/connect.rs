@@ -216,8 +216,9 @@ pub fn first_packet_other_than_connect_closes_without_disconnect() {
     for packet in [Packet::PingReq, Packet::Publish(publish)] {
         let mut c = broker.open(V).unwrap();
         c.send(&packet).unwrap();
+        // No deadline for the close: a server may act only at its CONNECT timeout.
         // req: 5.0/MQTT-3.1.0-1
-        let packets = c.expect_closed(default_timeout()).unwrap();
+        let packets = c.expect_closed_eventually().unwrap();
         // req: 5.0/MQTT-3.14.0-1
         assert!(
             packets.is_empty(),
@@ -265,10 +266,7 @@ pub fn session_present_and_clean_start() {
 
 pub fn unsupported_authentication_method_is_refused() {
     let broker = broker_or_skip!();
-    let connect = Connect::new(V, &unique_id("auth")).property(
-        prop::AUTHENTICATION_METHOD,
-        PropValue::Str("x-mqtt-testkit-unknown".into()),
-    );
+    let connect = super::unknown_auth_method_connect();
     // req: 5.0/MQTT-4.12.0-1
     if let Some(ack) = refused(&broker, &connect) {
         assert!(matches!(ack.code, 0x8C | 0x87), "{ack:?}");
@@ -361,13 +359,10 @@ pub fn data_after_a_refused_connect_is_ignored() {
     let t = super::topic();
     let mut sub = session(&broker);
     sub.subscribe(&t, 1).unwrap();
-    let bad_connects = [
-        Connect::new(V, &unique_id("ign")).property(
-            prop::AUTHENTICATION_METHOD,
-            PropValue::Str("x-mqtt-testkit-unknown".into()),
-        ),
-        Connect::new(V, &unique_id("ign")).protocol("MQTT", 6),
-    ];
+    let mut bad_connects = vec![Connect::new(V, &unique_id("ign")).protocol("MQTT", 6)];
+    if super::refuses_unknown_auth_method(&broker) {
+        bad_connects.push(super::unknown_auth_method_connect());
+    }
     for connect in bad_connects {
         // CONNECT, then (in the same write) a PUBLISH, a SUBSCRIBE and a
         // PINGREQ that a server processing them would answer.
@@ -406,14 +401,13 @@ pub fn connack_reason_codes_come_from_the_table() {
     will.qos = 3;
     // Only genuine level-5 CONNECTs: another level may be answered under
     // another version's rules.
-    let refusals = [
+    let mut refusals = vec![
         Connect::new(V, &unique_id("tbl")).flags(0x03),
         Connect::new(V, &unique_id("tbl")).will(will),
-        Connect::new(V, &unique_id("tbl")).property(
-            prop::AUTHENTICATION_METHOD,
-            PropValue::Str("x-mqtt-testkit-unknown".into()),
-        ),
     ];
+    if super::refuses_unknown_auth_method(&broker) {
+        refusals.push(super::unknown_auth_method_connect());
+    }
     for connect in refusals {
         let mut c = broker.open(V).unwrap();
         c.send(&Packet::Connect(Box::new(connect.clone()))).unwrap();

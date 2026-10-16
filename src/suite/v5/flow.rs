@@ -5,6 +5,7 @@
 //! (MQTT 5.0).
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::{
     Ack, Connect, Packet, PropValue, Property, Publish, broker_or_skip, default_timeout, find_prop,
@@ -31,10 +32,10 @@ pub fn server_respects_the_clients_receive_maximum() {
     for i in 0..5u8 {
         publisher.publish(&t, &[i], 1, false).unwrap();
     }
-    // The initial send quota is not zero ...
+    // The initial send quota is not zero; a server may use less than all of
+    // it (down to one message at a time) ...
     // req: 5.0/MQTT-4.9.0-1
-    let first = sub.expect_publish_unacked(default_timeout()).unwrap();
-    let second = sub.expect_publish_unacked(default_timeout()).unwrap();
+    let mut window = sub.expect_in_flight(2, default_timeout()).unwrap();
     // ... and not above the client's Receive Maximum.
     // req: 5.0/MQTT-3.3.4-9
     // req: 5.0/MQTT-4.9.0-2
@@ -44,21 +45,22 @@ pub fn server_respects_the_clients_receive_maximum() {
     // req: 5.0/MQTT-3.3.4-10
     // req: 5.0/MQTT-4.9.0-3
     sub.ping().unwrap();
-    sub.send(&Packet::PubAck(Ack::new(first.packet_id.unwrap())))
-        .unwrap();
-    let third = sub.expect_publish_unacked(default_timeout()).unwrap();
-    // req: 5.0/MQTT-3.3.4-9
-    sub.expect_no_packet(quiet_period()).unwrap();
-    sub.send(&Packet::PubAck(Ack::new(second.packet_id.unwrap())))
-        .unwrap();
-    sub.send(&Packet::PubAck(Ack::new(third.packet_id.unwrap())))
-        .unwrap();
-    let rest = sub.expect_publishes(2, default_timeout()).unwrap();
-    let order: Vec<u8> = [&first, &second, &third]
-        .into_iter()
-        .chain(&rest)
-        .map(|p| p.payload[0])
-        .collect();
+    let mut order = Vec::new();
+    let mut checked_refill = false;
+    while let Some(oldest) = (!window.is_empty()).then(|| window.remove(0)) {
+        sub.send(&Packet::PubAck(Ack::new(oldest.packet_id.unwrap())))
+            .unwrap();
+        order.push(oldest.payload[0]);
+        // Each PUBACK frees one slot.
+        if order.len() + window.len() < 5 {
+            window.push(sub.expect_publish_unacked(default_timeout()).unwrap());
+            if window.len() == 2 && order.len() + window.len() < 5 && !checked_refill {
+                // req: 5.0/MQTT-3.3.4-9
+                sub.expect_no_packet(quiet_period()).unwrap();
+                checked_refill = true;
+            }
+        }
+    }
     assert_eq!(order, [0, 1, 2, 3, 4]);
 }
 
@@ -86,8 +88,13 @@ pub fn receive_maximum_counts_qos2_until_pubcomp() {
     // req: 5.0/MQTT-3.3.4-9
     sub.expect_no_packet(quiet_period()).unwrap();
     sub.send(&Packet::PubComp(Ack::new(id))).unwrap();
+    // No deadline for the next delivery (a server may release it from a
+    // timer), but it is a first transmission.
     // req: 5.0/MQTT-3.3.4-9
-    assert_eq!(sub.expect_publish(default_timeout()).unwrap().payload, b"b");
+    let b = sub.expect_publish(Duration::from_secs(15)).unwrap();
+    assert_eq!(b.payload, b"b");
+    // req: 5.0/MQTT-3.3.1-3
+    assert!(!b.dup, "first transmission with DUP=1: {b:?}");
 }
 
 /// Strict: MQTT-3.3.4-7 binds the client; rejecting relies on the server detecting it.
@@ -318,8 +325,9 @@ pub fn unmapped_topic_alias_is_a_protocol_error() {
     // An empty Topic Name with an alias that has no mapping is a Protocol
     // Error (3.3.2.3.4).
     // req: 5.0/MQTT-4.13.1-1
-    let reason = c.expect_error_close(default_timeout()).unwrap();
-    assert!(matches!(reason, None | Some(0x82 | 0x94)), "{reason:?}");
+    // Only the close is required; any error code from the DISCONNECT table
+    // may accompany it (0x82 Protocol Error is the obvious one).
+    c.expect_error_close(default_timeout()).unwrap();
 }
 
 pub fn topic_alias_mappings_do_not_survive_the_connection() {
@@ -618,6 +626,10 @@ pub fn server_omits_reason_strings_and_user_properties_that_do_not_fit() {
 
 pub fn refusing_connack_fits_the_clients_maximum_packet_size() {
     let broker = broker_or_skip!();
+    if !super::refuses_unknown_auth_method(&broker) {
+        crate::outcome::skipped("the broker accepts an unknown Authentication Method: no refusal");
+        return;
+    }
     // A refusal needs only flags, reason code and an empty Property Length
     // (5 bytes); a Reason String or User Property would not fit in 8.
     let max = 8;

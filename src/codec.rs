@@ -945,7 +945,12 @@ pub fn decode(buf: &[u8], version: Version) -> Result<Option<(Packet, usize)>, C
     let Some(body) = buf.get(1 + n..total) else {
         return Ok(None);
     };
-    Ok(Some((decode_body(first, body, version)?, total)))
+    let packet = decode_body(first, body, version).map_err(|e| {
+        let bytes = buf.get(..total.min(32)).unwrap_or(&[]);
+        let more = if total > 32 { " .." } else { "" };
+        CodecError(format!("{} (bytes {bytes:02x?}{more})", e.0))
+    })?;
+    Ok(Some((packet, total)))
 }
 
 fn expect_flags(first: u8, allowed: &[u8], name: &str) -> Result<(), CodecError> {
@@ -1086,7 +1091,10 @@ fn decode_body(first: u8, body: &[u8], version: Version) -> Result<Packet, Codec
         }
         t::DISCONNECT => {
             expect_flags(first, &[0], "DISCONNECT")?;
-            let (reason, properties) = decode_reason(&mut r, v5)?;
+            // 3.x defines no server-to-client DISCONNECT. Some servers send a
+            // 5.0-style one (reason code, properties) to 3.x clients before
+            // closing; decode it so cases can tell it from other packets.
+            let (reason, properties) = decode_reason(&mut r, true)?;
             Packet::Disconnect(ReasonOnly { reason, properties })
         }
         t::AUTH if v5 => {

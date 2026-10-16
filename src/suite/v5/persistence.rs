@@ -210,15 +210,19 @@ pub fn redelivery_keeps_the_original_order() {
     for i in 0..5u8 {
         publisher.publish(&t, &[i], 1, false).unwrap();
     }
-    let first: Vec<_> = (0..5)
-        .map(|_| c.expect_publish_unacked(default_timeout()).unwrap())
-        .collect();
+    // Unacknowledged; a server may keep fewer than 5 in flight, the rest
+    // queued behind them.
+    let first = c.expect_in_flight(5, default_timeout()).unwrap();
     c.abort();
     let (mut c, _) = persistent(&broker, &id);
     let again = c.expect_publishes(5, default_timeout()).unwrap();
     // req: 5.0/MQTT-4.4.0-1
     assert_eq!(
-        again.iter().map(|p| p.packet_id).collect::<Vec<_>>(),
+        again
+            .iter()
+            .take(first.len())
+            .map(|p| p.packet_id)
+            .collect::<Vec<_>>(),
         first.iter().map(|p| p.packet_id).collect::<Vec<_>>()
     );
     assert_eq!(
@@ -332,12 +336,15 @@ pub fn unsubscribe_completes_deliveries_already_started() {
     let mut publisher = session(&broker);
     publisher.publish(&t1, b"one", 1, false).unwrap();
     publisher.publish(&t2, b"two", 2, false).unwrap();
-    let mut started = [
-        c.expect_publish_unacked(default_timeout()).unwrap(),
-        c.expect_publish_unacked(default_timeout()).unwrap(),
-    ];
+    let mut started = c.expect_in_flight(2, default_timeout()).unwrap();
+    if started.len() < 2 {
+        crate::outcome::skipped("server keeps one message in flight: both deliveries cannot start");
+        c.abort();
+        forget(&broker, &id);
+        return;
+    }
     started.sort_by_key(|p| p.qos);
-    let [q1, q2] = started;
+    let [q1, q2] = <[Publish; 2]>::try_from(started).unwrap();
     assert_eq!((q1.qos, q2.qos), (1, 2));
     c.unsubscribe_many(&[&t1, &t2]).unwrap();
     // QoS 2: the flow goes on after the UNSUBACK.
@@ -417,6 +424,27 @@ fn ack_with(c: &mut Client, p: &Publish, reason: u8) {
     c.send(&packet).unwrap();
 }
 
+/// Sends PINGREQ and waits for PINGRESP, answering any PUBREL on the way with
+/// PUBCOMP. A PUBREL after a PUBREC of 0x80 or above is not required
+/// (MQTT-4.3.3-4 asks for one only below 0x80) but not forbidden either, so
+/// it is noted, not failed.
+fn ping_answering_pubrel(c: &mut Client) {
+    c.send(&Packet::PingReq).unwrap();
+    loop {
+        match c.expect_packet(default_timeout()).unwrap() {
+            Packet::PingResp => return,
+            Packet::PubRel(a) => {
+                crate::outcome::note(format!(
+                    "PUBREL {} sent after the client's PUBREC 0x80",
+                    a.packet_id
+                ));
+                c.send(&Packet::PubComp(Ack::new(a.packet_id))).unwrap();
+            }
+            other => panic!("expected PINGRESP, got {other:?}"),
+        }
+    }
+}
+
 pub fn publish_rejected_with_an_error_ack_is_not_resent() {
     let broker = broker_or_skip!();
     let t = topic();
@@ -427,16 +455,16 @@ pub fn publish_rejected_with_an_error_ack_is_not_resent() {
     publisher.publish(&t, b"reject-1", 1, false).unwrap();
     publisher.publish(&t, b"reject-2", 2, false).unwrap();
     publisher.publish(&t, b"pending", 1, false).unwrap();
-    let got: Vec<Publish> = (0..3)
-        .map(|_| c.expect_publish_unacked(default_timeout()).unwrap())
-        .collect();
-    for p in &got {
+    // Answer each rejected message as it arrives: a server may keep only one
+    // message in flight.
+    for _ in 0..3 {
+        let p = c.expect_publish_unacked(default_timeout()).unwrap();
         if p.payload != b"pending" {
-            ack_with(&mut c, p, 0x80);
+            ack_with(&mut c, &p, 0x80);
         }
     }
     // Let the broker process the acknowledgements before the drop.
-    c.ping().unwrap();
+    ping_answering_pubrel(&mut c);
     c.abort();
     let (mut c, present) = persistent(&broker, &id);
     assert!(present);

@@ -199,16 +199,20 @@ pub fn redelivery_keeps_the_original_order() {
     for i in 0..5u8 {
         publisher.publish(&t, &[i], 1, false).unwrap();
     }
-    let first: Vec<_> = (0..5)
-        .map(|_| c.expect_publish_unacked(default_timeout()).unwrap())
-        .collect();
+    // Unacknowledged; a server may keep fewer than 5 in flight, the rest
+    // queued behind them.
+    let first = c.expect_in_flight(5, default_timeout()).unwrap();
     c.abort();
     let (mut c, _) = persistent(&broker, &id);
     let again = c.expect_publishes(5, default_timeout()).unwrap();
     // req: 3.1.1/MQTT-4.6.0-1
     // req: 3.1.1/MQTT-4.4.0-1
     assert_eq!(
-        again.iter().map(|p| p.packet_id).collect::<Vec<_>>(),
+        again
+            .iter()
+            .take(first.len())
+            .map(|p| p.packet_id)
+            .collect::<Vec<_>>(),
         first.iter().map(|p| p.packet_id).collect::<Vec<_>>()
     );
     assert_eq!(
