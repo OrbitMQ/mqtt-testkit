@@ -1,0 +1,6 @@
+mqtt-testkit: MQTT conformance and interoperability test kit
+Copyright (c) 2026 SOFTT
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The interoperability scenarios in src/suite/*/interop.rs are original work and contain no third-party code.

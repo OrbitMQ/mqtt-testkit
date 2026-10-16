@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  no-enterprise:
+    # ADR-0012: community repos must never contain enterprise (proprietary) code.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No enterprise code
+        run: |
+          marker="LicenseRef-OrbitMQ-"; marker="${marker}Enterprise"
+          hits=$(git grep -l -I -F "$marker" -- . || true)
+          paths=$(git ls-files | grep -E "(^|/)enterprise/" || true)
+          if [ -n "$hits$paths" ]; then echo "Enterprise code found:"; echo "$hits"; echo "$paths"; exit 1; fi

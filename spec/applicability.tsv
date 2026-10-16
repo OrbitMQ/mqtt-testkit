@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 SOFTT
+# Server-binding requirements that no black-box case checks, and why. Every server-binding requirement
+# in requirements.tsv is either cited by a case or listed here (a unit test enforces both directions).
+# category: not-black-box   no externally observable server behaviour distinguishes compliance
+#           needs-capability  checkable only with a broker feature or setup the suite cannot provide
+#                             generically (enhanced-auth mechanism, bridging, restart, admin API)
+#           informative       MAY / SHOULD statements the suite deliberately does not assert
+requirement	category	reason
+3.1/V31-2.1-9	needs-capability	Retained messages surviving a restart needs the broker restarted on the same storage; the suite cannot restart an arbitrary broker.
+3.1/V31-2.2-6	informative	MAY: an administrative mechanism to delete stored sessions is optional and outside MQTT.
+3.1/V31-2.2-7	not-black-box	Client-side SHOULD about reserved CONNECT flag bit 0; a 3.1 server may accept or reject it, so both behaviours conform.
+3.1/V31-3.1-8	not-black-box	The CONNECT timeout is configurable and its value unspecified, so no observable deadline can be asserted.
+3.1/V31-3.8-6	informative	MAY: delivering before SUBACK; the harness accepts either order.
+3.1/V31-3.8-8	informative	MAY: granting a lower QoS; downgrade cases accept any granted QoS up to the requested one.
+3.1/V31-4.2-1	informative	MAY: sender-side retry with DUP; the server accepting DUP retries is checked elsewhere.
+3.1/V31-4.2-2	not-black-box	The retry timeout policy is configurable and unspecified.
+3.1/V31-4.2-4	informative	SHOULD: in-session retry timing is unspecified; redelivery on reconnect is asserted under V31-4.2-3.
+3.1/V31-A-9	informative	MAY: 3.1 defines no special $ topics; applying the 3.1.1 rule is optional.
+3.1.1/MQTT-3.2.2-6	not-black-box	Which failures have no fitting CONNACK return code is server-internal; malformed CONNECTs are covered by MQTT-3.1.4-1.
+3.1.1/MQTT-4.7.3-3	not-black-box	A topic over 65535 bytes cannot be encoded in the 2-byte length prefix, so no server behaviour differs.
+3.1.1/MQTT-4.8.0-2	not-black-box	A transient server-side processing error cannot be induced from outside the broker.
+3.1.1/MQTT-7.0.0-1	needs-capability	Bridge (outbound client) conformance needs a bridge configured to a second broker.
+5.0/MQTT-3.1.3-1	not-black-box	A reordered CONNECT payload parses as different but valid field values, so no server behaviour distinguishes it.
+5.0/MQTT-3.1.4-2	needs-capability	Needs authentication or authorization configured so that a check can fail; an anonymous broker performs none.
+5.0/MQTT-4.2.0-1	not-black-box	Transport requirement trivially met: every case runs over TCP.
+5.0/MQTT-4.7.3-3	not-black-box	A topic over 65,535 bytes cannot be encoded in the 2-byte length prefix, so no server behaviour differs.
+5.0/MQTT-3.1.2-30	needs-capability	Client rule during an enhanced-auth exchange; observable only on a broker offering an Authentication Method.
+5.0/MQTT-3.15.1-1	needs-capability	Without a supported Authentication Method every AUTH is already a Protocol Error (MQTT-4.12.0-7, checked), so bad AUTH flags are indistinguishable.
+5.0/MQTT-3.15.2-1	needs-capability	The server sends AUTH only during enhanced authentication, which needs a broker offering an Authentication Method.
+5.0/MQTT-3.15.2-2	needs-capability	Server-sent AUTH exists only during enhanced authentication.
+5.0/MQTT-3.15.2-3	needs-capability	Server-sent AUTH exists only during enhanced authentication.
+5.0/MQTT-4.12.0-2	needs-capability	An AUTH 0x18 challenge needs a broker offering an Authentication Method; mechanisms are broker-specific.
+5.0/MQTT-4.12.0-3	needs-capability	Client response to a server AUTH challenge; needs an enhanced-auth broker.
+5.0/MQTT-4.12.0-4	needs-capability	Rejection during an AUTH exchange needs an enhanced-auth broker (an unknown method is MQTT-4.12.0-1, checked).
+5.0/MQTT-4.12.0-5	needs-capability	The same Authentication Method on AUTH and CONNACK only exists after a successful enhanced authentication.
+5.0/MQTT-4.12.1-1	needs-capability	Re-authentication needs a broker that offers an Authentication Method.
+5.0/MQTT-4.12.1-2	needs-capability	Failed re-authentication needs a broker that offers an Authentication Method.
+3.1/V31-2.1-10	informative	MAY: a 3.1 server may delete a retained message on a zero-length retained PUBLISH; deletion is mandatory only from 3.1.1.

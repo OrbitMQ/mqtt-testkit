@@ -1,0 +1,175 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 SOFTT
+#
+# Weekly: run mqtt-testkit against the latest image of popular MQTT brokers, render the results into the
+# README ("Broker results" section, scripts/broker-matrix.py) and open (or update) a pull request when they
+# change. Add a broker by adding a matrix entry and a `case` arm in "Start broker".
+#
+# Needs the repository setting "Allow GitHub Actions to create and approve pull requests"
+# (Settings → Actions → General → Workflow permissions).
+name: brokers
+
+on:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brokers
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mqtt-testkit
+          path: target/release/mqtt-testkit
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: mosquitto, name: Eclipse Mosquitto, url: "https://mosquitto.org", image: "eclipse-mosquitto:latest" }
+          - { id: emqx, name: EMQX, url: "https://www.emqx.com", image: "emqx/emqx:latest" }
+          - { id: hivemq-ce, name: HiveMQ CE, url: "https://github.com/hivemq/hivemq-community-edition", image: "hivemq/hivemq-ce:latest" }
+          - { id: nanomq, name: NanoMQ, url: "https://nanomq.io", image: "emqx/nanomq:latest" }
+          # OrbitMQ joins once it is public, e.g.:
+          # - { id: orbitmq, name: OrbitMQ, url: "https://github.com/OrbitMQ/broker", image: "ghcr.io/orbitmq/orbitmq:latest" }
+    env:
+      OUT: results/${{ matrix.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mqtt-testkit
+      - run: chmod +x mqtt-testkit && mkdir -p "$OUT"
+      - name: Start broker
+        id: start
+        run: |
+          image="${{ matrix.image }}"
+          docker pull -q "$image"
+          ws=""
+          case "${{ matrix.id }}" in
+            mosquitto)
+              docker run -d --name broker -p 1883:1883 -p 8080:8080 \
+                -v "$PWD/ci/brokers/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" "$image"
+              ws="ws://127.0.0.1:8080/" ;;
+            emqx)
+              docker run -d --name broker -p 1883:1883 -p 8083:8083 "$image"
+              ws="ws://127.0.0.1:8083/mqtt" ;;
+            hivemq-ce)
+              docker run -d --name broker -p 1883:1883 "$image" ;;
+            nanomq)
+              docker run -d --name broker -p 1883:1883 -p 8083:8083 "$image"
+              ws="ws://127.0.0.1:8083/mqtt" ;;
+            *) echo "no start recipe for ${{ matrix.id }}"; exit 1 ;;
+          esac
+          echo "ws=$ws" >> "$GITHUB_OUTPUT"
+          version=$(docker image inspect "$image" \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' 2>/dev/null || true)
+          if [ -z "$version" ] || [ "$version" = "<no value>" ]; then
+            version=$(docker image inspect "$image" --format '{{ index .RepoDigests 0 }}' | sed 's/.*@sha256:\(.\{12\}\).*/sha256:\1/')
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Ready when an MQTT 3.1.1 CONNECT is accepted (up to 3 minutes).
+          for _ in $(seq 1 90); do
+            if ./mqtt-testkit probe --broker 127.0.0.1:1883 --no-color 2>/dev/null | grep -q "MQTT 3.1.1 accepted"; then
+              echo "started=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            sleep 2
+          done
+          docker logs broker | tail -50
+          echo "started=false" >> "$GITHUB_OUTPUT"
+      - name: Run
+        if: steps.start.outputs.started == 'true'
+        run: |
+          ws="${{ steps.start.outputs.ws }}"
+          ./mqtt-testkit probe --broker 127.0.0.1:1883 --no-color | tee "$OUT/probe.txt"
+          ./mqtt-testkit run --strict --broker 127.0.0.1:1883 ${ws:+--ws "$ws"} -j 4 --no-color \
+            --json "$OUT/run.json" > "$OUT/run.txt" || true
+          tail -20 "$OUT/run.txt"
+          # Re-run what failed once: a case counts as failed only if it fails twice.
+          failed=$(python3 -c 'import json,sys; print(" ".join(c["id"] for c in json.load(open(sys.argv[1]))["cases"] if c["status"] in ("failed","timeout")))' "$OUT/run.json")
+          if [ -n "$failed" ]; then
+            ./mqtt-testkit run --strict --broker 127.0.0.1:1883 ${ws:+--ws "$ws"} -j 1 --no-color \
+              --json "$OUT/retry.json" $failed > "$OUT/retry.txt" || true
+          fi
+      - name: Metadata
+        if: always()
+        env:
+          NAME: ${{ matrix.name }}
+          URL: ${{ matrix.url }}
+          IMAGE: ${{ matrix.image }}
+          VERSION: ${{ steps.start.outputs.version }}
+          STARTED: ${{ steps.start.outputs.started }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          meta = {
+              "name": os.environ["NAME"], "url": os.environ["URL"], "image": os.environ["IMAGE"],
+              "version": os.environ.get("VERSION") or "unknown",
+              "started": os.environ.get("STARTED") == "true",
+          }
+          if not meta["started"]:
+              meta["error"] = "did not start"
+          json.dump(meta, open(os.path.join(os.environ["OUT"], "meta.json"), "w"), indent=2)
+          EOF
+          docker rm -f broker > /dev/null 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.id }}
+          path: results/
+
+  report:
+    needs: [build, test]
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          path: results
+          merge-multiple: true
+      - name: Render README section
+        run: python3 scripts/broker-matrix.py results --readme README.md | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: bot/broker-results
+        run: |
+          if git diff --quiet -- README.md; then
+            echo "Broker results unchanged."; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add README.md
+          git commit -m "docs: weekly broker results ($(date -u +%F))"
+          git push --force origin "$BRANCH"
+          body="Weekly mqtt-testkit run against the latest broker images changed the results table.
+
+          Per-broker reports (probe, run, retry) are in the workflow run's artifacts: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if gh pr view "$BRANCH" --json state -q .state 2>/dev/null | grep -q OPEN; then
+            gh pr edit "$BRANCH" --body "$body"
+          else
+            gh pr create --head "$BRANCH" --base "${{ github.event.repository.default_branch }}" \
+              --title "docs: broker results changed" --body "$body"
+          fi
