@@ -19,14 +19,14 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
-  no-enterprise:
-    # ADR-0012: community repos must never contain enterprise (proprietary) code.
+  licence-headers:
+    # Every source file is Apache-2.0.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: No enterprise code
+      - name: SPDX headers
         run: |
-          marker="LicenseRef-OrbitMQ-"; marker="${marker}Enterprise"
-          hits=$(git grep -l -I -F "$marker" -- . || true)
-          paths=$(git ls-files | grep -E "(^|/)enterprise/" || true)
-          if [ -n "$hits$paths" ]; then echo "Enterprise code found:"; echo "$hits"; echo "$paths"; exit 1; fi
+          missing=$(git ls-files '*.rs' '*.py' '*.sh' '*.yml' '*.toml' | xargs grep -L 'SPDX-License-Identifier: Apache-2.0' || true)
+          if [ -n "$missing" ]; then echo "Files without an Apache-2.0 SPDX header:"; echo "$missing"; exit 1; fi
+          other=$(git grep -l -I 'SPDX-License-Identifier:' -- . | xargs grep -L 'SPDX-License-Identifier: Apache-2.0' || true)
+          if [ -n "$other" ]; then echo "Files with another SPDX licence:"; echo "$other"; exit 1; fi

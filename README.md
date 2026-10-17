@@ -396,7 +396,7 @@ cargo test        # no broker configured: every case skips and passes
 | `src/codec.rs`, `src/client.rs`, `src/broker.rs` | Independent MQTT codec, raw-socket client, broker discovery and spawning |
 | `src/registry.rs`, `src/runner.rs`, `src/report.rs`, `src/spec.rs` | Case registry and selection, parallel runner, reports, requirement catalogue |
 | `src/bin/mqtt-testkit/` | The command-line interface |
-| `spec/requirements.tsv` | Requirement catalogue (generated from the OrbitMQ project's `specs/requirements/*.yaml`) |
+| `spec/requirements.tsv` | Requirement catalogue: every normative statement, with level, binding and a link into the spec |
 | `spec/applicability.tsv` | Server-binding requirements no black-box case can check, with the reason |
 | `tests/` | `cargo test` wrappers and [the harness and contribution guide](tests/README.md) |
 

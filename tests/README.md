@@ -59,7 +59,7 @@ Every server-binding requirement in `spec/requirements.tsv` is cited by a case o
 
 The harness picks the first match:
 
-1. **`MQTT_TESTKIT_BIN=/path/to/orbitmq`**: each test spawns its own broker with
+1. **`MQTT_TESTKIT_BIN=/path/to/broker`**: each test spawns its own broker with
    `ORBITMQ_LISTEN=127.0.0.1:<free port>` and waits up to `MQTT_TESTKIT_STARTUP_TIMEOUT_MS` (default 10000) for
    the port to accept. The process is killed when the test ends. Choosing the port (bind port 0, release
    it) races with other tests and other processes, so port choice, spawn and readiness run under a
@@ -79,7 +79,7 @@ The harness picks the first match:
    passes. CI relies on this, so `cargo test` works without a broker.
 
 ```bash
-MQTT_TESTKIT_BIN=../broker/target/release/orbitmq cargo test
+MQTT_TESTKIT_BIN=/path/to/broker MQTT_TESTKIT_BIN_ARGS="-p {port}" cargo test
 MQTT_TESTKIT_BROKER=127.0.0.1:1883 cargo test --test v5
 MQTT_TESTKIT_BROKER=127.0.0.1:1883 cargo test --test v3_1_1 -- keep_alive --nocapture
 ```
@@ -105,18 +105,14 @@ it, one per line:
 // req: 5.0/MQTT-3.2.2-7
 ```
 
-The prefix is the `spec:` field of `specs/requirements/mqtt-<version>.yaml` without `mqtt-`. Tag numbers are
+The prefix is the spec version (`3.1`, `3.1.1` or `5.0`), as in the first column of `spec/requirements.tsv`. Tag numbers are
 reused across versions with different meanings, so an unqualified ID is never valid. Cite only what the test
 actually proves. A test that only exercises a requirement in one branch (e.g. "if the server refuses a
 zero-length client id it must use 0x02") puts the marker in that branch.
 
-`scripts/req-check.py` in the control repo scans `conformance/` (and `broker/`) for these markers. It fails if
-a marker names an unknown requirement, and it builds the compliance matrix (`--matrix`). With
-`--enforce M1`, it also fails when an in-scope server-binding requirement has no test.
-
-```bash
-cd .. && python3 scripts/req-check.py
-```
+The build registers every marker with its case, and `cargo test --lib` fails if a marker names a requirement
+that is not in `spec/requirements.tsv`. `mqtt-testkit show <requirement>` lists the cases that check it, and
+`mqtt-testkit coverage -v` lists server-binding requirements without a case.
 
 ## Harness API (`mqtt_testkit`)
 
@@ -234,6 +230,6 @@ Publishes and subscribes at QoS 0/1/2 and sets, reads and clears a retained mess
 carries `// req: 3.1.1/MQTT-7.0.0-2` (interoperation with an independent client without extensions).
 
 ```bash
-MQTT_TESTKIT_BIN=../broker/target/release/orbitmq cargo test --test interop_mosquitto -- --nocapture
-mqtt-testkit interop mosquitto --spawn ../broker/target/release/orbitmq
+MQTT_TESTKIT_BIN=/path/to/broker MQTT_TESTKIT_BIN_ARGS="-p {port}" cargo test --test interop_mosquitto -- --nocapture
+mqtt-testkit interop mosquitto --spawn "/path/to/broker -p {port}"
 ```

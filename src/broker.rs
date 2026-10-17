@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn a_missing_binary_is_not_retried() {
-        let err = Broker::spawn("/nonexistent/orbitmq", "")
+        let err = Broker::spawn("/nonexistent/mqtt-broker", "")
             .unwrap_err()
             .to_string();
         assert!(err.contains("cannot spawn"), "{err}");
