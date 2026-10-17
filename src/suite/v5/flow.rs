@@ -5,6 +5,7 @@
 //! (MQTT 5.0).
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::{
     Ack, Connect, Packet, PropValue, Property, Publish, broker_or_skip, default_timeout, find_prop,
@@ -26,15 +27,15 @@ pub fn server_respects_the_clients_receive_maximum() {
                 .property(prop::RECEIVE_MAXIMUM, PropValue::TwoByte(2)),
         )
         .unwrap();
-    sub.subscribe(&t, 1).unwrap();
+    sub.subscribe_needing(&t, 1);
     let mut publisher = session(&broker);
     for i in 0..5u8 {
         publisher.publish(&t, &[i], 1, false).unwrap();
     }
-    // The initial send quota is not zero ...
+    // The initial send quota is not zero; a server may use less than all of
+    // it (down to one message at a time) ...
     // req: 5.0/MQTT-4.9.0-1
-    let first = sub.expect_publish_unacked(default_timeout()).unwrap();
-    let second = sub.expect_publish_unacked(default_timeout()).unwrap();
+    let mut window = sub.expect_in_flight(2, default_timeout()).unwrap();
     // ... and not above the client's Receive Maximum.
     // req: 5.0/MQTT-3.3.4-9
     // req: 5.0/MQTT-4.9.0-2
@@ -44,21 +45,23 @@ pub fn server_respects_the_clients_receive_maximum() {
     // req: 5.0/MQTT-3.3.4-10
     // req: 5.0/MQTT-4.9.0-3
     sub.ping().unwrap();
-    sub.send(&Packet::PubAck(Ack::new(first.packet_id.unwrap())))
-        .unwrap();
-    let third = sub.expect_publish_unacked(default_timeout()).unwrap();
-    // req: 5.0/MQTT-3.3.4-9
-    sub.expect_no_packet(quiet_period()).unwrap();
-    sub.send(&Packet::PubAck(Ack::new(second.packet_id.unwrap())))
-        .unwrap();
-    sub.send(&Packet::PubAck(Ack::new(third.packet_id.unwrap())))
-        .unwrap();
-    let rest = sub.expect_publishes(2, default_timeout()).unwrap();
-    let order: Vec<u8> = [&first, &second, &third]
-        .into_iter()
-        .chain(&rest)
-        .map(|p| p.payload[0])
-        .collect();
+    let mut order = Vec::new();
+    let mut checked_refill = false;
+    while let Some(oldest) = (!window.is_empty()).then(|| window.remove(0)) {
+        sub.send(&Packet::PubAck(Ack::new(oldest.packet_id.unwrap())))
+            .unwrap();
+        order.push(oldest.payload[0]);
+        // Each PUBACK frees one slot.
+        if order.len() + window.len() < 5 {
+            window.push(sub.expect_publish_unacked(default_timeout()).unwrap());
+            if window.len() == 2 && order.len() + window.len() < 5 && !checked_refill {
+                // req: 5.0/MQTT-3.3.4-9
+                sub.expect_no_packet(quiet_period()).unwrap();
+                checked_refill = true;
+            }
+        }
+    }
+    // req: 5.0/MQTT-4.6.0-5
     assert_eq!(order, [0, 1, 2, 3, 4]);
 }
 
@@ -71,7 +74,7 @@ pub fn receive_maximum_counts_qos2_until_pubcomp() {
                 .property(prop::RECEIVE_MAXIMUM, PropValue::TwoByte(1)),
         )
         .unwrap();
-    sub.subscribe(&t, 2).unwrap();
+    sub.subscribe_needing(&t, 2);
     let mut publisher = session(&broker);
     publisher.publish(&t, b"a", 2, false).unwrap();
     publisher.publish(&t, b"b", 2, false).unwrap();
@@ -86,8 +89,13 @@ pub fn receive_maximum_counts_qos2_until_pubcomp() {
     // req: 5.0/MQTT-3.3.4-9
     sub.expect_no_packet(quiet_period()).unwrap();
     sub.send(&Packet::PubComp(Ack::new(id))).unwrap();
+    // No deadline for the next delivery (a server may release it from a
+    // timer), but it is a first transmission.
     // req: 5.0/MQTT-3.3.4-9
-    assert_eq!(sub.expect_publish(default_timeout()).unwrap().payload, b"b");
+    let b = sub.expect_publish(Duration::from_secs(15)).unwrap();
+    assert_eq!(b.payload, b"b");
+    // req: 5.0/MQTT-3.3.1-3
+    assert!(!b.dup, "first transmission with DUP=1: {b:?}");
 }
 
 /// Strict: MQTT-3.3.4-7 binds the client; rejecting relies on the server detecting it.
@@ -296,14 +304,19 @@ pub fn client_topic_alias_can_be_remapped() {
         by_alias.properties = vec![alias(1)];
         c.publish_packet(by_alias).unwrap();
     }
-    let got: Vec<String> = sub
+    // Order is guaranteed only per topic (MQTT-4.6.0-5), so compare
+    // (topic, payload) pairs as a multiset.
+    let mut got: Vec<(String, Vec<u8>)> = sub
         .expect_publishes(4, default_timeout())
         .unwrap()
         .into_iter()
-        .map(|p| p.topic)
+        .map(|p| (p.topic, p.payload))
         .collect();
+    got.sort();
+    let one = || (a.clone(), b"1".to_vec());
+    let two = || (b.clone(), b"2".to_vec());
     // req: 5.0/MQTT-3.3.2-12
-    assert_eq!(got, [a.clone(), a, b.clone(), b]);
+    assert_eq!(got, [one(), one(), two(), two()]);
 }
 
 pub fn unmapped_topic_alias_is_a_protocol_error() {
@@ -318,8 +331,9 @@ pub fn unmapped_topic_alias_is_a_protocol_error() {
     // An empty Topic Name with an alias that has no mapping is a Protocol
     // Error (3.3.2.3.4).
     // req: 5.0/MQTT-4.13.1-1
-    let reason = c.expect_error_close(default_timeout()).unwrap();
-    assert!(matches!(reason, None | Some(0x82 | 0x94)), "{reason:?}");
+    // Only the close is required; any error code from the DISCONNECT table
+    // may accompany it (0x82 Protocol Error is the obvious one).
+    c.expect_error_close(default_timeout()).unwrap();
 }
 
 pub fn topic_alias_mappings_do_not_survive_the_connection() {
@@ -337,9 +351,15 @@ pub fn topic_alias_mappings_do_not_survive_the_connection() {
     if server_alias_max(&ack).is_none() {
         return;
     }
+    let mut sub = session(&broker);
+    sub.subscribe(&t, 0).unwrap();
     let mut set = Publish::new(&t, b"set");
     set.properties = vec![alias(1)];
     c.publish_packet(set).unwrap();
+    assert_eq!(
+        sub.expect_publish(default_timeout()).unwrap().payload,
+        b"set"
+    );
     c.disconnect().unwrap();
     let (mut c, _) = broker
         .connect_ok(
@@ -351,8 +371,12 @@ pub fn topic_alias_mappings_do_not_survive_the_connection() {
     let mut p = Publish::new("", b"stale");
     p.properties = vec![alias(1)];
     c.send(&Packet::Publish(p)).unwrap();
+    // The close an unmapped alias calls for is checked by
+    // unmapped_topic_alias_is_a_protocol_error; here the old mapping must not
+    // be used: nothing reaches the topic it named.
+    let _ = c.packets_until_close(default_timeout());
     // req: 5.0/MQTT-3.3.2-7
-    c.expect_error_close(default_timeout()).unwrap();
+    sub.expect_no_packet(quiet_period()).unwrap();
     super::forget(&broker, &id);
 }
 
@@ -412,6 +436,7 @@ fn resolve(publishes: &[Publish], max: u16) -> Vec<String> {
             Some(PropValue::TwoByte(a)) => {
                 // req: 5.0/MQTT-3.1.2-26
                 // req: 5.0/MQTT-3.3.2-11
+                // req: 5.0/MQTT-3.3.2-8
                 assert!((1..=max).contains(a), "alias {a} with maximum {max}");
                 if p.topic.is_empty() {
                     map.get(a)
@@ -445,7 +470,13 @@ pub fn server_topic_aliases_respect_the_clients_maximum() {
     let got = sub
         .expect_publishes(names.len(), default_timeout())
         .unwrap();
-    assert_eq!(resolve(&got, 2), names);
+    // Resolve in arrival order (aliases are per connection, in order), then
+    // compare as a multiset: order is guaranteed only per topic.
+    let mut resolved = resolve(&got, 2);
+    resolved.sort();
+    let mut expected = names;
+    expected.sort();
+    assert_eq!(resolved, expected);
 }
 
 pub fn no_topic_aliases_without_a_client_topic_alias_maximum() {
@@ -502,6 +533,13 @@ fn raw_expect(c: &mut super::Raw, kind: &str) -> (Packet, Vec<u8>) {
 
 pub fn server_omits_reason_strings_and_user_properties_that_do_not_fit() {
     let broker = broker_or_skip!();
+    // The raw client below bypasses the harness's capability gate, and the
+    // case publishes at QoS 2.
+    let (_, caps) = session_with_ack(&broker);
+    if connack_u32(&caps, prop::MAXIMUM_QOS, 2) < 2 {
+        crate::outcome::skipped("broker announces Maximum QoS below 2");
+        return;
+    }
     let t = unique_id("mps");
     // Smallest Maximum Packet Size that leaves room for this broker's
     // CONNACK without Reason String and User Properties and for the one
@@ -589,13 +627,24 @@ pub fn server_omits_reason_strings_and_user_properties_that_do_not_fit() {
     let Packet::Publish(p) = p else {
         unreachable!()
     };
-    let id = p.packet_id.unwrap();
-    c.send(&Packet::PubRec(Ack::new(id)));
-    let (_, bytes) = raw_expect(&mut c, "PUBREL");
-    // req: 5.0/MQTT-3.6.2-2
-    // req: 5.0/MQTT-3.6.2-3
-    fits(&bytes, max, "PUBREL");
-    c.send(&Packet::PubComp(Ack::new(id)));
+    // The broker may have granted less than QoS 2 (3.8.4): then there is no
+    // PUBREL to measure.
+    match (p.qos, p.packet_id) {
+        (2, Some(id)) => {
+            c.send(&Packet::PubRec(Ack::new(id)));
+            let (_, bytes) = raw_expect(&mut c, "PUBREL");
+            // req: 5.0/MQTT-3.6.2-2
+            // req: 5.0/MQTT-3.6.2-3
+            fits(&bytes, max, "PUBREL");
+            c.send(&Packet::PubComp(Ack::new(id)));
+        }
+        (q, id) => {
+            crate::outcome::note(format!("delivered at QoS {q}; no PUBREL to check"));
+            if let (1, Some(id)) = (q, id) {
+                c.send(&Packet::PubAck(Ack::new(id)));
+            }
+        }
+    }
 
     // A malformed PUBLISH (QoS 3, MQTT-3.3.1-4): any DISCONNECT must fit too.
     let mut bad = Publish::new(&t, b"x");
@@ -618,6 +667,10 @@ pub fn server_omits_reason_strings_and_user_properties_that_do_not_fit() {
 
 pub fn refusing_connack_fits_the_clients_maximum_packet_size() {
     let broker = broker_or_skip!();
+    if !super::refuses_unknown_auth_method(&broker) {
+        crate::outcome::skipped("the broker accepts an unknown Authentication Method: no refusal");
+        return;
+    }
     // A refusal needs only flags, reason code and an empty Property Length
     // (5 bytes); a Reason String or User Property would not fit in 8.
     let max = 8;

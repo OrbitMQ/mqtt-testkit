@@ -71,7 +71,8 @@ pub fn connect_subscribe_publish_round_trip_over_websocket() {
     let mut c = connected(&url, "wsrt");
     let topic = format!("ws/{}", unique_id("rt"));
     let ack = c.subscribe(&topic, 1).unwrap();
-    assert_eq!(ack.codes, [1]);
+    // A server may grant QoS 0 (3.8.4); the round trip works either way.
+    assert!(matches!(ack.codes.as_slice(), [0 | 1]), "{ack:?}");
     c.publish(&topic, b"over websocket", 1, false).unwrap();
     let p = c.expect_publish(default_timeout()).unwrap();
     assert_eq!(
@@ -201,7 +202,8 @@ pub fn several_packets_in_one_frame_are_processed() {
         s.contains(&Packet::PingResp)
             && s.iter()
                 .any(|p| matches!(p, Packet::PubAck(a) if a.packet_id == 2))
-            && s.iter().any(|p| matches!(p, Packet::Publish(_)))
+            && s.iter()
+                .any(|p| matches!(p, Packet::SubAck(a) if a.packet_id == 1))
     });
     // req: 3.1.1/MQTT-6.0.0-2
     assert!(
@@ -217,11 +219,14 @@ pub fn several_packets_in_one_frame_are_processed() {
                 .any(|p| matches!(p, Packet::PubAck(a) if a.packet_id == 2)),
         "{seen:?}"
     );
-    assert!(
-        seen.iter()
-            .any(|p| matches!(p, Packet::Publish(p) if p.payload == b"packed")),
-        "{seen:?}"
-    );
+    // Nothing says the subscription is active for a PUBLISH that follows it
+    // before its SUBACK, so self-delivery of the packed PUBLISH is only noted.
+    if !seen
+        .iter()
+        .any(|p| matches!(p, Packet::Publish(p) if p.payload == b"packed"))
+    {
+        crate::outcome::note("the PUBLISH packed after the SUBSCRIBE was not delivered back");
+    }
 }
 
 /// Packets that straddle frame boundaries (each frame holds the tail of one

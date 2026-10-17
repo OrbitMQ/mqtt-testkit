@@ -410,12 +410,7 @@ pub(crate) fn execute(
         Event::Finished(r) => {
             running.retain(|id| *id != r.case.id);
             done += 1;
-            match r.status {
-                Status::Passed => counts.passed += 1,
-                Status::Failed => counts.failed += 1,
-                Status::Skipped => counts.skipped += 1,
-                Status::TimedOut => counts.timed_out += 1,
-            }
+            counts.add(r);
             let show = match verbosity {
                 Verbosity::Verbose => true,
                 Verbosity::Normal => r.status.is_failure(),
@@ -484,14 +479,7 @@ fn print_summary(meta: &Meta, results: &[CaseResult], selected: &[&'static Case]
         } else {
             format!("MQTT {}", r.case.spec())
         };
-        let s = groups.entry(key).or_default();
-        s.total += 1;
-        match r.status {
-            Status::Passed => s.passed += 1,
-            Status::Failed => s.failed += 1,
-            Status::Skipped => s.skipped += 1,
-            Status::TimedOut => s.timed_out += 1,
-        }
+        groups.entry(key).or_default().add(r);
     }
     for (name, s) in &groups {
         println!(
@@ -586,6 +574,17 @@ fn print_summary(meta: &Meta, results: &[CaseResult], selected: &[&'static Case]
         },
         meta.duration.as_secs_f64()
     );
+    if s.strict_not_rejected > 0 {
+        println!(
+            "{}",
+            term::dim(&format!(
+                "  {} strict-tier case{} failed: client violations the broker did not reject \
+                 (allowed; not counted as violations)",
+                s.strict_not_rejected,
+                if s.strict_not_rejected == 1 { "" } else { "s" }
+            ))
+        );
+    }
     if !all_selected && s.ok() {
         println!(
             "{}",

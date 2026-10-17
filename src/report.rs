@@ -24,28 +24,37 @@ pub struct Summary {
     pub skipped: usize,
     /// Timed out.
     pub timed_out: usize,
+    /// Strict-tier cases that failed or timed out: client violations the
+    /// broker did not reject. Allowed (rejection is required only once the
+    /// server detects the violation), so not counted in `failed` /
+    /// `timed_out` and not a reason for [`Summary::ok`] to be false.
+    pub strict_not_rejected: usize,
 }
 
 impl Summary {
     /// Counts `results`.
     #[must_use]
     pub fn of(results: &[CaseResult]) -> Self {
-        let mut s = Self {
-            total: results.len(),
-            ..Self::default()
-        };
+        let mut s = Self::default();
         for r in results {
-            match r.status {
-                Status::Passed => s.passed += 1,
-                Status::Failed => s.failed += 1,
-                Status::Skipped => s.skipped += 1,
-                Status::TimedOut => s.timed_out += 1,
-            }
+            s.add(r);
         }
         s
     }
 
-    /// Whether nothing failed or timed out.
+    /// Counts one result.
+    pub const fn add(&mut self, r: &CaseResult) {
+        self.total += 1;
+        match r.status {
+            Status::Passed => self.passed += 1,
+            Status::Skipped => self.skipped += 1,
+            Status::Failed | Status::TimedOut if r.case.strict => self.strict_not_rejected += 1,
+            Status::Failed => self.failed += 1,
+            Status::TimedOut => self.timed_out += 1,
+        }
+    }
+
+    /// Whether nothing failed or timed out (strict-tier cases aside).
     #[must_use]
     pub const fn ok(&self) -> bool {
         self.failed == 0 && self.timed_out == 0
@@ -82,6 +91,9 @@ pub fn verdicts(results: &[CaseResult]) -> BTreeMap<&'static str, Verdict> {
     let mut out: BTreeMap<&'static str, Verdict> = BTreeMap::new();
     for r in results {
         let v = match r.status {
+            // A strict case failing means the broker did not reject a client's
+            // violation, which the specifications allow: no verdict either way.
+            Status::Failed | Status::TimedOut if r.case.strict => Verdict::Inconclusive,
             Status::Failed | Status::TimedOut => Verdict::Violated,
             Status::Skipped => Verdict::Inconclusive,
             Status::Passed => Verdict::Met,
@@ -161,8 +173,8 @@ pub fn json(meta: &Meta, results: &[CaseResult]) -> String {
     );
     let _ = writeln!(
         out,
-        "  \"summary\": {{\"total\": {}, \"passed\": {}, \"failed\": {}, \"skipped\": {}, \"timed_out\": {}}},",
-        s.total, s.passed, s.failed, s.skipped, s.timed_out
+        "  \"summary\": {{\"total\": {}, \"passed\": {}, \"failed\": {}, \"skipped\": {}, \"timed_out\": {}, \"strict_not_rejected\": {}}},",
+        s.total, s.passed, s.failed, s.skipped, s.timed_out, s.strict_not_rejected
     );
     out.push_str("  \"cases\": [\n");
     let cases: Vec<String> = results
@@ -239,7 +251,8 @@ pub fn junit(meta: &Meta, results: &[CaseResult]) -> String {
         "<testsuites name=\"{}\" tests=\"{}\" failures=\"{}\" skipped=\"{}\" time=\"{:.3}\">",
         xml_escape(&meta.tool),
         s.total,
-        s.failed + s.timed_out,
+        // JUnit lists every failed testcase, strict ones included.
+        s.failed + s.timed_out + s.strict_not_rejected,
         s.skipped,
         meta.duration.as_secs_f64()
     );
@@ -251,7 +264,7 @@ pub fn junit(meta: &Meta, results: &[CaseResult]) -> String {
             "  <testsuite name=\"{}\" tests=\"{}\" failures=\"{}\" skipped=\"{}\" time=\"{time:.3}\">",
             xml_escape(&name),
             ss.total,
-            ss.failed + ss.timed_out,
+            ss.failed + ss.timed_out + ss.strict_not_rejected,
             ss.skipped
         );
         for r in rs {

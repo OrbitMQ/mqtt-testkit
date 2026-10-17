@@ -17,7 +17,7 @@ pub fn retained_message_is_sent_to_new_subscribers_with_retain_1() {
     let mut publisher = session(&broker);
     publisher.publish(&t, b"kept", 1, true).unwrap();
     let mut late = session(&broker);
-    late.subscribe(&t, 1).unwrap();
+    late.subscribe_needing(&t, 1);
     let p = late.expect_publish(default_timeout()).unwrap();
     // req: 3.1.1/MQTT-3.3.1-5
     // req: 3.1.1/MQTT-3.3.1-6
@@ -52,11 +52,41 @@ pub fn new_retained_message_replaces_the_old_one() {
     let mut late = session(&broker);
     late.subscribe(&t, 1).unwrap();
     let got = late.collect_publishes(quiet_period()).unwrap();
-    // req: 3.1.1/MQTT-3.3.1-7
     // req: 3.1.1/MQTT-3.3.1-5
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0].payload, b"new");
     publisher.publish(&t, b"", 0, true).unwrap();
+}
+
+/// A QoS 0 retained PUBLISH must discard the retained message before it; the
+/// server may then keep or drop the QoS 0 one (MQTT-3.3.1-7).
+pub fn qos0_retained_message_discards_the_previous_one() {
+    let broker = broker_or_skip!();
+    let t = topic();
+    let mut publisher = session(&broker);
+    publisher.publish(&t, b"old", 1, true).unwrap();
+    publisher.publish(&t, b"new", 0, true).unwrap();
+    // The PINGRESP shows the broker has read the QoS 0 PUBLISH sent before it.
+    publisher.ping().unwrap();
+    let mut late = session(&broker);
+    late.subscribe(&t, 1).unwrap();
+    let got: Vec<Vec<u8>> = late
+        .collect_publishes(quiet_period())
+        .unwrap()
+        .into_iter()
+        .map(|p| p.payload)
+        .collect();
+    // req: 3.1.1/MQTT-3.3.1-7
+    assert!(
+        !got.contains(&b"old".to_vec()),
+        "old retained message kept: {got:?}"
+    );
+    if got.is_empty() {
+        crate::outcome::note("the QoS 0 retained message was not kept (allowed)");
+    } else {
+        assert_eq!(got, [b"new".to_vec()]);
+    }
+    publisher.publish(&t, b"", 1, true).unwrap();
 }
 
 pub fn empty_retained_message_deletes_and_is_not_stored() {

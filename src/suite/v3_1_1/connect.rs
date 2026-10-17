@@ -40,7 +40,9 @@ pub fn unsupported_protocol_level_gets_connack_0x01_then_close() {
         let connect = Connect::new(V, &unique_id("lvl")).protocol("MQTT", level);
         c.send(&Packet::Connect(Box::new(connect))).unwrap();
         // req: 3.1.1/MQTT-3.2.2-5
-        let ack = c.expect_refused(default_timeout()).unwrap();
+        let ack = c.expect_refused(default_timeout()).unwrap_or_else(|e| {
+            panic!("level {level}: {e} (MQTT-3.1.2-2 requires a 3.1.1 CONNACK 0x01)")
+        });
         let ack = ack.unwrap_or_else(|| panic!("level {level}: closed without CONNACK 0x01"));
         // req: 3.1.1/MQTT-3.1.2-2
         assert_eq!(ack.code, 0x01, "level {level}");
@@ -56,8 +58,10 @@ pub fn foreign_protocol_name_is_not_processed_as_mqtt() {
         let connect = Connect::new(V, &unique_id("name")).protocol(name, 4);
         c.send(&Packet::Connect(Box::new(connect))).unwrap();
         // req: 3.1.1/MQTT-3.1.2-1
-        c.expect_refused(default_timeout())
+        let what = c
+            .expect_foreign_protocol_not_accepted()
             .unwrap_or_else(|e| panic!("protocol name {name:?}: {e}"));
+        crate::outcome::note(format!("protocol name {name:?}: {what}"));
     }
 }
 
@@ -73,6 +77,7 @@ pub fn will_qos_without_will_flag_closes() {
     for flags in [0x0A, 0x12] {
         // req: 3.1.1/MQTT-3.1.2-11
         // req: 3.1.1/MQTT-3.1.2-13
+        // req: 3.1.1/MQTT-3.1.4-1
         assert_connect_closed_without_connack(
             &broker,
             &Connect::new(V, &unique_id("wq")).flags(flags),
@@ -96,6 +101,7 @@ pub fn will_retain_without_will_flag_closes() {
     let broker = broker_or_skip!();
     // req: 3.1.1/MQTT-3.1.2-15
     // req: 3.1.1/MQTT-3.1.2-11
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &Connect::new(V, &unique_id("wr")).flags(0x22));
 }
 
@@ -104,12 +110,14 @@ pub fn will_qos_3_closes() {
     let mut will = Will::new("conformance/will", b"x");
     will.qos = 3;
     // req: 3.1.1/MQTT-3.1.2-14
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &Connect::new(V, &unique_id("w3")).will(will));
 }
 
 pub fn will_flag_without_will_fields_closes() {
     let broker = broker_or_skip!();
     // req: 3.1.1/MQTT-3.1.2-9
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &Connect::new(V, &unique_id("wf")).flags(0x06));
 }
 
@@ -118,12 +126,14 @@ pub fn password_without_username_closes() {
     let connect = Connect::new(V, &unique_id("pw")).password(b"secret");
     assert_eq!(connect.computed_flags(), 0x42);
     // req: 3.1.1/MQTT-3.1.2-22
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &connect);
 }
 
 pub fn username_flag_without_username_closes() {
     let broker = broker_or_skip!();
     // req: 3.1.1/MQTT-3.1.2-19
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &Connect::new(V, &unique_id("uf")).flags(0x82));
 }
 
@@ -133,6 +143,7 @@ pub fn username_present_without_flag_closes() {
         .username("user")
         .flags(0x02);
     // req: 3.1.1/MQTT-3.1.2-18
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &connect);
 }
 
@@ -142,6 +153,7 @@ pub fn password_flag_without_password_closes() {
         .username("user")
         .flags(0xC2);
     // req: 3.1.1/MQTT-3.1.2-21
+    // req: 3.1.1/MQTT-3.1.4-1
     assert_connect_closed_without_connack(&broker, &connect);
 }
 
@@ -193,10 +205,18 @@ pub fn ill_formed_utf8_client_id_closes() {
     for id in [&[b'a', 0xC3, 0x28][..], &[0xED, 0xA0, 0x80][..]] {
         let mut c = broker.open(V).unwrap();
         c.send_raw(&raw_connect_with_client_id(id)).unwrap();
+        // A CONNECT that does not conform is closed without CONNACK; 0x02
+        // is only for a client id that "is correct UTF-8 but not allowed".
         // req: 3.1.1/MQTT-1.5.3-1
         // req: 3.1.1/MQTT-3.1.3-4
-        c.expect_refused(default_timeout())
+        // req: 3.1.1/MQTT-3.1.4-1
+        let packets = c
+            .expect_closed(default_timeout())
             .unwrap_or_else(|e| panic!("client id {id:02x?}: {e}"));
+        assert!(
+            packets.is_empty(),
+            "client id {id:02x?} answered with {packets:?}"
+        );
     }
 }
 
@@ -221,19 +241,45 @@ pub fn second_connect_is_a_protocol_violation() {
     assert_eq!(c.expect_disconnect(default_timeout()).unwrap(), None);
 }
 
-pub fn first_packet_other_than_connect_closes() {
+/// PINGREQ and a PUBLISH, each sent as the first packet of a connection.
+fn first_packets() -> [Packet; 2] {
+    [
+        Packet::PingReq,
+        Packet::Publish(crate::Publish::new("conformance/first", b"x")),
+    ]
+}
+
+/// The server answers a first packet other than CONNECT with nothing but a
+/// refusal: it may close, refuse with a CONNACK or wait for a CONNECT.
+pub fn first_packet_other_than_connect_is_not_answered() {
     let broker = broker_or_skip!();
-    let publish = crate::Publish::new("conformance/first", b"x");
-    for packet in [Packet::PingReq, Packet::Publish(publish)] {
+    for packet in first_packets() {
         let mut c = broker.open(V).unwrap();
         c.send(&packet).unwrap();
-        // req: 3.1.1/MQTT-3.1.0-1
-        let packets = c.expect_closed(default_timeout()).unwrap();
+        let (packets, _closed) = c.packets_until_close(default_timeout()).unwrap();
+        // req: 3.1.1/MQTT-3.2.0-1
         assert!(
-            packets.is_empty(),
+            matches!(
+                packets.as_slice(),
+                [] | [Packet::ConnAck(crate::ConnAck { code: 1..=255, .. })]
+            ),
             "{} answered with {packets:?}",
             packet.name()
         );
+    }
+}
+
+/// Strict: MQTT-3.1.0-1 binds the client; the only server text is a SHOULD close
+/// without CONNECT (3.1.4), so closing relies on detection (MQTT-4.8.0-1).
+pub fn first_packet_other_than_connect_closes() {
+    let broker = broker_or_skip!();
+    for packet in first_packets() {
+        let mut c = broker.open(V).unwrap();
+        c.send(&packet).unwrap();
+        // No deadline for the close: a server may act only at its CONNECT timeout.
+        // req: 3.1.1/MQTT-3.1.0-1
+        c.expect_closed_eventually()
+            .unwrap_or_else(|e| panic!("{}: {e}", packet.name()));
     }
 }
 
@@ -319,10 +365,18 @@ pub fn ill_formed_utf8_will_topic_closes() {
             .bin(b"will");
         let mut c = broker.open(V).unwrap();
         c.send_raw(&w.frame(0x10)).unwrap();
+        // No CONNACK return code applies to a bad Will Topic.
         // req: 3.1.1/MQTT-3.1.3-10
         // req: 3.1.1/MQTT-1.5.3-1
-        c.expect_refused(default_timeout())
+        // req: 3.1.1/MQTT-3.1.4-1
+        // req: 3.1.1/MQTT-3.2.2-6
+        let packets = c
+            .expect_closed(default_timeout())
             .unwrap_or_else(|e| panic!("will topic {topic:02x?}: {e}"));
+        assert!(
+            packets.is_empty(),
+            "will topic {topic:02x?} answered with {packets:?}"
+        );
     }
 }
 
@@ -338,10 +392,16 @@ pub fn ill_formed_utf8_user_name_closes() {
             .bin(name);
         let mut c = broker.open(V).unwrap();
         c.send_raw(&w.frame(0x10)).unwrap();
+        // A close, or CONNACK 0x04 ("The data in the user name or password
+        // is malformed") then a close.
         // req: 3.1.1/MQTT-3.1.3-11
         // req: 3.1.1/MQTT-1.5.3-1
-        c.expect_refused(default_timeout())
+        let ack = c
+            .expect_refused(default_timeout())
             .unwrap_or_else(|e| panic!("user name {name:02x?}: {e}"));
+        if let Some(ack) = ack {
+            assert_eq!(ack.code, 0x04, "user name {name:02x?}: {ack:?}");
+        }
     }
 }
 
@@ -364,12 +424,29 @@ pub fn data_after_a_rejected_connect_is_not_processed() {
         p.retain = true;
         p.packet_id = Some(1);
         bytes.extend(Packet::Publish(p).encode(V));
+        // The refusal itself is checked by other cases: skip a CONNECT this
+        // broker accepts, and do not judge the shape of its refusal here.
+        let mut probe = broker.open(V).unwrap();
+        probe
+            .send(&Packet::Connect(Box::new(connect.clone())))
+            .unwrap();
+        if let Ok(Packet::ConnAck(a)) = probe.expect_packet(default_timeout())
+            && a.code == 0
+        {
+            crate::outcome::note(format!("{connect:?} accepted; not a refusal to test"));
+            continue;
+        }
         let mut c = broker.open(V).unwrap();
         c.send_raw(&bytes).unwrap();
         // A PUBACK (or anything but the refusal) fails `expect_refused`.
         // req: 3.1.1/MQTT-3.1.4-5
-        c.expect_refused(default_timeout())
-            .unwrap_or_else(|e| panic!("{connect:?}: {e}"));
+        match c.expect_refused(default_timeout()) {
+            Ok(_) => {}
+            Err(crate::HarnessError::Decode(e)) => {
+                crate::outcome::note(format!("refusal not decodable as 3.1.1: {e}"));
+            }
+            Err(e) => panic!("{connect:?}: {e}"),
+        }
     }
     // req: 3.1.1/MQTT-3.1.4-5
     sub.expect_no_packet(crate::quiet_period()).unwrap();

@@ -188,7 +188,9 @@ pub fn retained_publish_without_retain_available_is_disconnected_with_0x9a() {
     let mut c = session(&broker);
     let mut p = crate::Publish::new(&topic(), b"keep");
     p.retain = true;
-    c.send(&crate::Packet::Publish(p)).unwrap();
+    // On purpose without Retain Available: bypass the harness's gate.
+    c.send_raw(&crate::Packet::Publish(p).encode(super::V))
+        .unwrap();
     // req: 5.0/MQTT-3.2.2-14
     let reason = c.expect_error_close(default_timeout()).unwrap();
     if let Some(r) = reason {
