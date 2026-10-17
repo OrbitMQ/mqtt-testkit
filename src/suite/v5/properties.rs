@@ -315,6 +315,52 @@ pub fn request_problem_information_0_suppresses_reason_strings() {
     p.qos = 2;
     let rec = c.publish_packet(p).unwrap().unwrap();
     check(&rec.properties, "PUBREC");
+    // PUBCOMP, driven by hand (publish_packet consumes it).
+    let mut flow = Publish::new(&format!("{t}/nobody"), b"x");
+    flow.qos = 2;
+    flow.packet_id = Some(77);
+    c.send(&Packet::Publish(flow)).unwrap();
+    let rec = c
+        .wait_for(default_timeout(), "PUBREC", |p| match p {
+            Packet::PubRec(a) if a.packet_id == 77 => Some(a.clone()),
+            _ => None,
+        })
+        .unwrap();
+    if rec.reason.unwrap_or(0) < 0x80 {
+        c.send(&Packet::PubRel(crate::Ack::new(77))).unwrap();
+        let comp = c
+            .wait_for(default_timeout(), "PUBCOMP", |p| match p {
+                Packet::PubComp(a) if a.packet_id == 77 => Some(a.clone()),
+                _ => None,
+            })
+            .unwrap();
+        check(&comp.properties, "PUBCOMP");
+    }
+    // PUBCOMP for an unknown identifier (0x92).
+    c.send(&Packet::PubRel(crate::Ack::new(999))).unwrap();
+    let comp = c
+        .wait_for(default_timeout(), "PUBCOMP", |p| match p {
+            Packet::PubComp(a) if a.packet_id == 999 => Some(a.clone()),
+            _ => None,
+        })
+        .unwrap();
+    check(&comp.properties, "PUBCOMP for an unknown identifier");
+    // The server's PUBREL, on a QoS 2 delivery to this client.
+    let q2 = format!("{t}/q2");
+    c.subscribe_needing(&q2, 2);
+    let mut publisher = super::session(&broker);
+    publisher.publish(&q2, b"x", 2, false).unwrap();
+    let delivery = c.expect_publish_unacked(default_timeout()).unwrap();
+    let id = delivery.packet_id.unwrap();
+    c.send(&Packet::PubRec(crate::Ack::new(id))).unwrap();
+    let rel = c
+        .wait_for(default_timeout(), "PUBREL", |p| match p {
+            Packet::PubRel(a) if a.packet_id == id => Some(a.clone()),
+            _ => None,
+        })
+        .unwrap();
+    check(&rel.properties, "PUBREL");
+    c.send(&Packet::PubComp(crate::Ack::new(id))).unwrap();
 }
 
 pub fn acknowledgement_reason_codes_are_valid() {
@@ -442,8 +488,11 @@ pub fn assigned_client_identifiers_are_unique_and_resume_the_session() {
     // and close); then there is nothing to check.
     let ack1 = match c1.next_event(default_timeout()).unwrap() {
         crate::Event::Packet(Packet::ConnAck(a)) if a.code == 0 => a,
-        crate::Event::Packet(Packet::ConnAck(a)) if a.code == 0x85 => {
-            crate::outcome::skipped("broker refuses an empty client identifier (0x85)");
+        crate::Event::Packet(Packet::ConnAck(a)) if a.code >= 0x80 => {
+            crate::outcome::skipped(format!(
+                "broker refuses an empty client identifier ({:#04x})",
+                a.code
+            ));
             return;
         }
         crate::Event::Closed => {

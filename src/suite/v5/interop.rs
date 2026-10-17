@@ -1312,7 +1312,7 @@ pub fn request_response_properties_roundtrip() {
         find_prop(&at_a[0].properties, prop::CORRELATION_DATA),
         Some(&PropValue::Bin(correlation))
     );
-    let echo = cb.collect_publishes(Duration::ZERO).unwrap();
+    let echo = cb.collect_publishes(quiet_period()).unwrap();
     // req: 5.0/MQTT-3.8.3-3
     assert!(echo.is_empty(), "responder got its own response: {echo:?}");
     bye(ca);

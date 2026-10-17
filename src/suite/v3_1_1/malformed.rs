@@ -45,10 +45,28 @@ pub fn pingreq_with_invalid_fixed_header_flags_closes() {
     assert_violation_closes(&broker, &[0xC1, 0x00]);
 }
 
+/// A DISCONNECT with reserved flags set is a protocol violation, not a normal
+/// disconnect: the server closes and, unlike after a valid DISCONNECT,
+/// publishes the Will (3.1.2.5).
 pub fn disconnect_with_invalid_fixed_header_flags_closes() {
     let broker = broker_or_skip!();
+    let t = super::topic();
+    let mut sub = super::session(&broker);
+    sub.subscribe(&t, 0).unwrap();
+    let (mut c, _) = broker
+        .connect_ok(
+            &crate::Connect::new(super::V, &crate::unique_id("dfl"))
+                .will(crate::Will::new(&t, b"bad-disconnect")),
+        )
+        .unwrap();
+    c.send_raw(&[0xE1, 0x00]).unwrap();
     // req: 3.1.1/MQTT-3.14.1-1
-    assert_violation_closes(&broker, &[0xE1, 0x00]);
+    c.expect_disconnect(crate::default_timeout())
+        .unwrap_or_else(|e| panic!("after e1 00: {e}"));
+    // req: 3.1.1/MQTT-3.14.1-1
+    // req: 3.1.1/MQTT-3.1.2-8
+    let p = sub.expect_publish(crate::default_timeout()).unwrap();
+    assert_eq!(p.payload, b"bad-disconnect");
 }
 
 pub fn publish_with_qos_3_closes() {

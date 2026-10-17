@@ -96,9 +96,12 @@ pub fn text_frame_after_connect_closes_connection() {
         .unwrap()
         .send_frame(true, OP_TEXT, &encode(&Packet::PingReq))
         .unwrap();
-    // No packet (in 5.0 at most an error DISCONNECT) before the close.
+    // Only the close is required; anything the server sends first is noted.
     // req: 3.1.1/MQTT-6.0.0-1
-    c.expect_error_close(default_timeout()).unwrap();
+    let seen = c.expect_closed(default_timeout()).unwrap();
+    if !seen.is_empty() {
+        crate::outcome::note(format!("before the close: {seen:?}"));
+    }
 }
 
 /// A CONNECT sent in a text data frame is not accepted: the server closes
@@ -116,12 +119,10 @@ pub fn text_frame_carrying_connect_closes_connection() {
         .unwrap();
     // req: 3.1.1/MQTT-6.0.0-1
     let seen = c.expect_closed(default_timeout()).unwrap();
-    assert!(
-        !seen
-            .iter()
-            .any(|p| matches!(p, Packet::ConnAck(a) if a.code == 0)),
-        "CONNECT in a text frame was accepted: {seen:?}"
-    );
+    // Only the close is required; a reply sent first is noted.
+    if !seen.is_empty() {
+        crate::outcome::note(format!("before the close: {seen:?}"));
+    }
 }
 
 /// MQTT packets split over several WebSocket messages (one byte each) and

@@ -38,11 +38,32 @@ pub fn pubrel_with_invalid_fixed_header_flags_closes() {
     }
 }
 
+/// A DISCONNECT with reserved flags set is a Malformed Packet, not a normal
+/// disconnect: the server closes and, unlike after DISCONNECT 0x00,
+/// publishes the Will (MQTT-3.1.2-8).
 pub fn disconnect_with_invalid_fixed_header_flags_closes() {
     let broker = broker_or_skip!();
+    let t = super::topic();
+    let mut sub = super::session(&broker);
+    sub.subscribe(&t, 0).unwrap();
+    let (mut c, _) = broker
+        .connect_ok(
+            &crate::Connect::new(super::V, &crate::unique_id("dfl"))
+                .will(crate::Will::new(&t, b"bad-disconnect")),
+        )
+        .unwrap();
+    c.send_raw(&[0xE1, 0x00]).unwrap();
     // req: 5.0/MQTT-3.14.1-1
-    let reason = assert_error_closes(&broker, &[0xE1, 0x00]);
-    assert!(matches!(reason, None | Some(0x81)), "reason {reason:?}");
+    let reason = c
+        .expect_error_close(crate::default_timeout())
+        .unwrap_or_else(|e| panic!("after e1 00: {e}"));
+    if let Some(r) = reason.filter(|r| *r != 0x81) {
+        crate::outcome::note(format!("DISCONNECT {r:#04x}, not 0x81 (Malformed Packet)"));
+    }
+    // req: 5.0/MQTT-3.14.1-1
+    // req: 5.0/MQTT-3.1.2-8
+    let p = sub.expect_publish(crate::default_timeout()).unwrap();
+    assert_eq!(p.payload, b"bad-disconnect");
 }
 
 /// AUTH with a reserved fixed-header bit set is malformed whatever its content,
@@ -64,7 +85,11 @@ pub fn publish_with_qos_3_is_malformed() {
         .raw(b"x");
     // req: 5.0/MQTT-3.3.1-4
     let reason = assert_error_closes(&broker, &body.frame(0x36));
-    assert!(matches!(reason, None | Some(0x81)), "reason {reason:?}");
+    // "Use DISCONNECT with Reason Code 0x81" (§3.3.1.2) under a SHOULD-level
+    // DISCONNECT (§4.13.1): another error code is noted.
+    if let Some(r) = reason.filter(|r| *r != 0x81) {
+        crate::outcome::note(format!("DISCONNECT {r:#04x}, not 0x81 (Malformed Packet)"));
+    }
 }
 
 pub fn remaining_length_longer_than_four_bytes_closes() {

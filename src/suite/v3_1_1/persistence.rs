@@ -251,8 +251,10 @@ pub fn inbound_qos2_state_survives_a_reconnect() {
     c.abort();
     let (mut c, present) = persistent(&broker, &id);
     assert!(present);
-    // The client resends the PUBLISH (DUP) as it never saw the PUBREC
-    // completed by PUBCOMP, then releases it.
+    // The client saw the PUBREC, so a conforming client would resume with
+    // PUBREL (inbound_qos2_flow_resumes_with_pubrel). Here it resends the
+    // PUBLISH instead (DUP), which the server must still recognise as the
+    // message it already owns (MQTT-4.3.3-2), then releases it.
     p.dup = true;
     c.send(&Packet::Publish(p)).unwrap();
     match c.expect_packet(default_timeout()).unwrap() {
@@ -267,6 +269,40 @@ pub fn inbound_qos2_state_survives_a_reconnect() {
     let got = sub.collect_publishes(quiet_period()).unwrap();
     // req: 3.1.1/MQTT-4.3.3-2
     // req: 3.1.1/MQTT-4.1.0-1
+    assert_eq!(got.len(), 1, "{got:?}");
+    c.disconnect().unwrap();
+    forget(&broker, &id);
+}
+
+/// The flow a conforming client resumes after a reconnect: it already has the
+/// PUBREC, so it sends PUBREL; the server answers from the inbound QoS 2 state
+/// it kept with the session and delivers the message exactly once.
+pub fn inbound_qos2_flow_resumes_with_pubrel() {
+    let broker = broker_or_skip!();
+    let t = topic();
+    let mut sub = session(&broker);
+    sub.subscribe(&t, 2).unwrap();
+    let id = unique_id("pir");
+    let (mut c, _) = persistent(&broker, &id);
+    let mut p = Publish::new(&t, b"released-after-reconnect");
+    p.qos = 2;
+    p.packet_id = Some(22);
+    c.send(&Packet::Publish(p)).unwrap();
+    match c.expect_packet(default_timeout()).unwrap() {
+        Packet::PubRec(a) => assert_eq!(a.packet_id, 22),
+        other => panic!("expected PUBREC, got {other:?}"),
+    }
+    c.abort();
+    let (mut c, present) = persistent(&broker, &id);
+    assert!(present);
+    c.send(&Packet::PubRel(Ack::new(22))).unwrap();
+    // req: 3.1.1/MQTT-4.1.0-1
+    match c.expect_packet(default_timeout()).unwrap() {
+        Packet::PubComp(a) => assert_eq!(a.packet_id, 22),
+        other => panic!("expected PUBCOMP, got {other:?}"),
+    }
+    let got = sub.collect_publishes(quiet_period()).unwrap();
+    // req: 3.1.1/MQTT-4.3.3-2
     assert_eq!(got.len(), 1, "{got:?}");
     c.disconnect().unwrap();
     forget(&broker, &id);

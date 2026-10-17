@@ -293,6 +293,7 @@ pub fn accepted_wildcard_filters_work_or_are_rejected() {
         match c.next_event_or_close(default_timeout()).unwrap() {
             crate::Event::Packet(Packet::SubAck(s)) if s.codes == [0x80] => {
                 // Rejected: what a server without wildcard support must do.
+                // req: 3.1.1/MQTT-3.8.3-2
                 crate::outcome::note(format!("wildcard filter {filter:?} rejected"));
             }
             crate::Event::Closed => {
@@ -302,7 +303,7 @@ pub fn accepted_wildcard_filters_work_or_are_rejected() {
                 let mut publisher = session(&broker);
                 publisher.publish(&name, b"w", 0, false).unwrap();
                 // A wildcard filter the server grants must actually match.
-                // req: 3.1.1/MQTT-3.8.3-2
+                // req: 3.1.1/MQTT-4.5.0-1
                 assert_eq!(
                     c.expect_publish(default_timeout()).unwrap().topic,
                     name,

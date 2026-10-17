@@ -197,6 +197,11 @@ pub fn suback_has_one_code_per_filter_in_order() {
     for (code, (_, requested)) in ack.codes.iter().zip(&filters) {
         // req: 3.1.1/MQTT-3.9.3-2
         assert!(
+            matches!(code, 0 | 1 | 2 | 0x80),
+            "reserved code {code:#04x}"
+        );
+        // req: 3.1.1/MQTT-3.8.4-5
+        assert!(
             *code <= *requested || *code == 0x80,
             "code {code:#04x} for requested QoS {requested}"
         );

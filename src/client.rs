@@ -76,6 +76,13 @@ impl Limits {
     }
 }
 
+/// The error Reason Codes of the 5.0 DISCONNECT table (§3.14.2.1) a server may
+/// send (0x04 is for the Client only).
+const SERVER_DISCONNECT_ERRORS: [u8; 27] = [
+    0x80, 0x81, 0x82, 0x83, 0x87, 0x89, 0x8B, 0x8D, 0x8E, 0x8F, 0x90, 0x93, 0x94, 0x95, 0x96, 0x97,
+    0x98, 0x99, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA0, 0xA1, 0xA2,
+];
+
 /// Whether a topic filter uses a wildcard level.
 fn has_wildcard(filter: &str) -> bool {
     filter.contains('+') || filter.contains('#')
@@ -458,6 +465,10 @@ impl Client {
             Some(r) if r < 0x80 => Err(HarnessError::Unexpected(format!(
                 "DISCONNECT for an error carried success reason code {r:#04x}"
             ))),
+            // MQTT-3.14.2-1: a code from the DISCONNECT table.
+            Some(r) if !SERVER_DISCONNECT_ERRORS.contains(&r) => Err(HarnessError::Unexpected(
+                format!("DISCONNECT with a code not in the DISCONNECT table: {r:#04x}"),
+            )),
             other => Ok(other),
         }
     }
@@ -782,7 +793,14 @@ impl Client {
         let packets = self.expect_closed(limit)?;
         let allowed = match packets.as_slice() {
             [] => true,
-            [Packet::Disconnect(d)] => self.version.is_v5() && d.reason.unwrap_or(0) >= 0x80,
+            [Packet::Disconnect(d)] if self.version.is_v5() => {
+                SERVER_DISCONNECT_ERRORS.contains(&d.reason.unwrap_or(0))
+            }
+            // As in expect_disconnect: noted in 3.x, not failed.
+            [Packet::Disconnect(d)] => {
+                self.note_v3_disconnect(d.reason);
+                true
+            }
             _ => false,
         };
         if !allowed {

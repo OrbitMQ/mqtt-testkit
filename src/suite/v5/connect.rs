@@ -151,11 +151,21 @@ pub fn empty_client_id_gets_an_assigned_client_identifier() {
     let ack_a = match a.next_event(default_timeout()).unwrap() {
         crate::Event::Packet(Packet::ConnAck(ack)) if ack.code == 0 => ack,
         other => {
-            // Refused: CONNACK 0x85 then close, or a bare close.
+            // Refused: a CONNACK error code (0x85 is a MAY) then close, or a
+            // bare close.
             // req: 5.0/MQTT-3.1.3-8
             match other {
                 crate::Event::Packet(Packet::ConnAck(ack)) => {
-                    assert_eq!(ack.code, 0x85, "{ack:?}");
+                    assert!(
+                        super::CONNACK_CODES.contains(&ack.code) && ack.code >= 0x80,
+                        "{ack:?}"
+                    );
+                    if ack.code != 0x85 {
+                        crate::outcome::note(format!(
+                            "empty client id refused with {:#04x}",
+                            ack.code
+                        ));
+                    }
                     a.expect_closed(default_timeout()).unwrap();
                 }
                 crate::Event::Closed => {}
@@ -190,21 +200,16 @@ fn raw_connect_with_client_id(id: &[u8]) -> Vec<u8> {
 pub fn ill_formed_utf8_client_id_is_refused() {
     let broker = broker_or_skip!();
     for id in [&[b'a', 0xC3, 0x28][..], &[0xED, 0xA0, 0x80][..]] {
-        let mut c = broker.open(V).unwrap();
-        c.send_raw(&raw_connect_with_client_id(id)).unwrap();
         // req: 5.0/MQTT-1.5.4-1
         // req: 5.0/MQTT-3.1.3-4
-        c.expect_refused(default_timeout())
-            .unwrap_or_else(|e| panic!("client id {id:02x?}: {e}"));
+        raw_refused(&broker, &raw_connect_with_client_id(id));
     }
 }
 
 pub fn null_character_in_client_id_is_refused() {
     let broker = broker_or_skip!();
-    let mut c = broker.open(V).unwrap();
-    c.send_raw(&raw_connect_with_client_id(b"ab\0cd")).unwrap();
     // req: 5.0/MQTT-1.5.4-2
-    c.expect_refused(default_timeout()).unwrap();
+    raw_refused(&broker, &raw_connect_with_client_id(b"ab\0cd"));
 }
 
 pub fn second_connect_is_a_protocol_error() {
@@ -357,6 +362,8 @@ fn raw_refused(broker: &crate::Broker, bytes: &[u8]) {
     if let Some(a) = ack {
         assert!(super::CONNACK_CODES.contains(&a.code), "{a:?}");
         assert!(a.code >= 0x80, "{a:?}");
+        // MQTT-3.2.2-6: a refusing CONNACK has Session Present 0.
+        assert!(!a.session_present(), "{a:?}");
     }
 }
 

@@ -24,7 +24,7 @@ pub fn will_is_published_at_its_qos() {
         .unwrap();
     c.abort();
     let p = sub.expect_publish(default_timeout()).unwrap();
-    // req: 5.0/MQTT-3.1.2-9
+    // req: 5.0/MQTT-3.8.4-8
     assert_eq!(p.qos, granted.min(1), "{p:?}");
     assert_eq!(p.payload, b"q1-will");
 }
@@ -40,7 +40,9 @@ pub fn will_without_retain_is_not_retained() {
     c.abort();
     let p = sub.expect_publish(default_timeout()).unwrap();
     assert_eq!(p.payload, b"plain");
-    // req: 5.0/MQTT-3.1.2-14
+    // With Retain As Published 0 the live copy has RETAIN 0 regardless
+    // (MQTT-3.3.1-12); the late subscriber below checks MQTT-3.1.2-14.
+    // req: 5.0/MQTT-3.3.1-12
     assert!(!p.retain);
     let mut late = session(&broker);
     late.subscribe(&t, 0).unwrap();
@@ -291,10 +293,17 @@ pub fn will_properties_are_forwarded_with_user_property_order() {
     // req: 5.0/MQTT-3.1.3-10
     assert_eq!(got, want);
     // Will Properties travel with the will (section 3.1.3.2).
+    // req: 5.0/MQTT-3.3.2-20
     assert_eq!(
         crate::find_prop(&p.properties, prop::CONTENT_TYPE),
         Some(&PropValue::Str("application/json".into()))
     );
+    // req: 5.0/MQTT-3.3.2-15
+    assert_eq!(
+        crate::find_prop(&p.properties, prop::RESPONSE_TOPIC),
+        Some(&PropValue::Str(format!("{t}/reply")))
+    );
+    // req: 5.0/MQTT-3.3.2-16
     assert_eq!(
         crate::find_prop(&p.properties, prop::CORRELATION_DATA),
         Some(&PropValue::Bin(vec![0, 1, 2]))

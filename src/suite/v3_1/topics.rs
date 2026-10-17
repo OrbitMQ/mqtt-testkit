@@ -69,15 +69,15 @@ pub fn hash_matches_the_parent_and_all_descendants() {
     assert_eq!(got, [t.clone(), format!("{t}/a"), format!("{t}/a/b/c")]);
 }
 
-pub fn matching_is_case_sensitive_and_does_not_normalise() {
+/// 3.1 says only that topic names are case sensitive; Unicode normalisation
+/// is a 3.1.1 rule (4.7.3), so it is not checked here.
+pub fn matching_is_case_sensitive_and_exact() {
     let broker = broker_or_skip!();
     let t = topic();
     let exact = format!("{t}/Caf\u{e9} \u{2603}");
     let topics = [
         exact.clone(),
         format!("{t}/caf\u{e9} \u{2603}"),
-        // Decomposed e + combining acute accent: a different byte sequence.
-        format!("{t}/Cafe\u{301} \u{2603}"),
         format!("{t}/Caf\u{e9}  \u{2603}"),
     ];
     let got = matched(&broker, &exact, &topics);

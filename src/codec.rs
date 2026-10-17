@@ -931,6 +931,30 @@ pub fn decode_varint(buf: &[u8]) -> Result<Option<(u32, usize)>, CodecError> {
     }
 }
 
+/// Decodes a Remaining Length. Only 5.0 requires the minimal encoding
+/// (MQTT-1.5.5-1); 3.1 and 3.1.1 limit the field to four bytes, so a
+/// non-minimal one is accepted there.
+fn decode_remaining_length(
+    buf: &[u8],
+    version: Version,
+) -> Result<Option<(u32, usize)>, CodecError> {
+    if version.is_v5() {
+        return decode_varint(buf);
+    }
+    let mut value = 0u32;
+    for (i, b) in buf.iter().enumerate().take(4) {
+        value |= u32::from(b & 0x7F) << (7 * i);
+        if b & 0x80 == 0 {
+            return Ok(Some((value, i + 1)));
+        }
+    }
+    if buf.len() >= 4 {
+        malformed("Remaining Length longer than 4 bytes")
+    } else {
+        Ok(None)
+    }
+}
+
 /// Decodes one packet from the front of `buf`. Returns the packet and the
 /// number of bytes it occupied, or `Ok(None)` if `buf` holds only part of a
 /// packet.
@@ -938,7 +962,7 @@ pub fn decode(buf: &[u8], version: Version) -> Result<Option<(Packet, usize)>, C
     let Some(&first) = buf.first() else {
         return Ok(None);
     };
-    let Some((len, n)) = decode_varint(buf.get(1..).unwrap_or(&[]))? else {
+    let Some((len, n)) = decode_remaining_length(buf.get(1..).unwrap_or(&[]), version)? else {
         return Ok(None);
     };
     let total = 1 + n + usize::try_from(len).unwrap_or(usize::MAX);
@@ -1070,6 +1094,11 @@ fn decode_body(first: u8, body: &[u8], version: Version) -> Result<Packet, Codec
         t::CONNACK => {
             expect_flags(first, &[0], "CONNACK")?;
             let flags = r.u8()?;
+            // Connect Acknowledge Flags bits 7-1 are reserved, set to 0
+            // (3.1.1 §3.2.2.1, 5.0 §3.2.2.1); 3.1 leaves the byte unused.
+            if version != Version::V31 && flags & 0xFE != 0 {
+                return malformed(format!("CONNACK flags {flags:#04x}: reserved bits set"));
+            }
             let code = r.u8()?;
             // A 5.0 server may answer an unsupported level with a 2-byte CONNACK.
             let properties = if v5 && r.remaining() > 0 {
@@ -1149,6 +1178,13 @@ fn decode_body(first: u8, body: &[u8], version: Version) -> Result<Packet, Codec
             expect_flags(first, &[0], "SUBACK/UNSUBACK")?;
             let packet_id = r.u16()?;
             let properties = if v5 { r.properties()? } else { Vec::new() };
+            // A 3.x UNSUBACK has no payload (Remaining Length 2).
+            if kind == t::UNSUBACK && !v5 && r.remaining() > 0 {
+                return malformed(format!(
+                    "{} bytes of payload in a 3.x UNSUBACK",
+                    r.remaining()
+                ));
+            }
             let s = SubAck {
                 packet_id,
                 properties,

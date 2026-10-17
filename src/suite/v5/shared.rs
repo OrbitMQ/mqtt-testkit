@@ -24,14 +24,15 @@ fn shared_available(broker: &Broker) -> bool {
     if connack_u32(&ack, prop::SHARED_SUBSCRIPTION_AVAILABLE, 1) == 1 {
         return true;
     }
+    // Any rejection is acceptable here (0x9E is the code the spec names);
+    // whether it is correct is not this case's subject.
     let r = subscribe_rejected(&mut c, &format!("$share/g/{}", topic()), 0);
-    assert!(
-        matches!(
-            r,
-            Rejection::SubAck(0x9E) | Rejection::Closed(None | Some(0x9E))
-        ),
-        "{r:?}"
-    );
+    if !matches!(
+        r,
+        Rejection::SubAck(0x9E) | Rejection::Closed(None | Some(0x9E))
+    ) {
+        crate::outcome::note(format!("shared subscription refused with {r:?}, not 0x9E"));
+    }
     crate::outcome::skipped("Shared Subscription Available = 0");
     false
 }
