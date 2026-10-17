@@ -47,7 +47,9 @@ function is shown by `mqtt-testkit show`. Area files:
   reject it" puts a doc line `/// Strict: <reason>` on the function. The specifications require rejection
   only once the server detects the violation (5.0 MQTT-4.13.1-1, 3.1.1 MQTT-4.8.0-1), so a compliant broker
   may fail such a case. Strict cases run only with `run --strict`. Rules with an explicit server MUST (e.g.
-  ill-formed UTF-8 is a Malformed Packet, 5.0 MQTT-1.5.4-1; reserved flags; QoS 3) are not strict.
+  ill-formed UTF-8 is a Malformed Packet, 5.0 MQTT-1.5.4-1; reserved flags; QoS 3 in 3.1.1 and 5.0) are not
+  strict. MQTT 3.1 names almost no server reactions, so its cases built on a client rule (an invalid CONNECT,
+  reserved values, wildcards in a topic name) are strict.
 
 ### Requirements without a case
 
@@ -163,12 +165,34 @@ Where the specification allows several behaviours, the cases accept all of them.
   - 3.1 client id too long or empty (code 2)
 
   In 3.1.1, an invalid CONNECT must close *without* CONNACK (MQTT-3.1.4-1), so those cases reject any CONNACK.
+  A case that needs a refusal only as a precondition (data sent after a refused CONNECT, the CONNACK code
+  table, a refusing CONNACK's size) skips that refusal when the broker accepts the CONNECT; the case that
+  owns the refusal reports it.
 - **Unknown protocol level or name (5.0 cases).** A multi-version server may answer a CONNECT that is not
-  `MQTT` level 5 under another version's rules. Level ≠ 5 may get CONNACK 0x84 or a 3.x-style 0x01; a foreign
-  protocol name may get any non-zero code. The close is always mandatory. Levels 0–2 with `MQTT` are tested
-  under 3.1.1 rules (CONNACK 0x01).
+  `MQTT` level 5 under another version's rules. Level ≠ 5 may get CONNACK 0x84 or a 3.x-style 0x01, then the
+  close. A foreign protocol name may be closed, refused with any non-zero code (then closed), or handled
+  under another protocol in silence (MQTT-3.1.2-1); it must never be accepted as MQTT. Levels 0–2 with `MQTT` are tested
+  under 3.1.1 rules (CONNACK 0x01): a 3.1.1 CONNACK 0x01 satisfies both specifications, a 5.0 CONNACK 0x84
+  does not satisfy MQTT-3.1.2-2 of 3.1.1. A 3.1 `MQIsdp` CONNECT with level 5 (sent with a Property Length)
+  may be answered as a 5.0 CONNECT with a foreign name: a 5.0 CONNACK with any error code, then the close.
 - **5.0 DISCONNECT before close** is optional. If present, it must carry a reason code ≥ 0x80, from the
   DISCONNECT table. For a session takeover it must be 0x8E. After a DISCONNECT the server sends nothing more.
+  An unmapped Topic Alias needs only the close; any error code may come with it.
+- **DISCONNECT to a 3.x client.** 3.x has no server-to-client DISCONNECT. Where a case requires a close, a
+  5.0-style DISCONNECT immediately before it is noted, not failed: it does not answer the client's packet.
+- **First packet other than CONNECT.** MQTT-3.1.0-1 binds the client, and the server only SHOULD close a
+  connection that sends no CONNECT. The normal-tier case requires that nothing but a refusing CONNACK is sent
+  (MQTT-3.2.0-1, 5.0 MQTT-3.14.0-1); the strict-tier case requires the close, waiting up to 30 s because it
+  may come at the server's own CONNECT timeout.
+- **In-flight window.** A server may keep fewer QoS > 0 messages in flight than the client's Receive Maximum
+  allows, down to one at a time. Cases read what is in flight and acknowledge to get the rest; a check that
+  needs two messages in flight at once (distinct identifiers, PUBREL order, unsubscribing two started
+  deliveries) skips when the server sends one at a time. A delivery released by a timer after the window
+  frees is accepted, but it is a first transmission (DUP = 0).
+- **PUBREL after PUBREC ≥ 0x80** is not required (MQTT-4.3.3-4 asks for one only below 0x80) and not
+  forbidden; it is answered with PUBCOMP and noted.
+- **Shared subscriptions at QoS 2.** A server may grant QoS 1 on a shared subscription; the interrupted
+  QoS 2 delivery cases (MQTT-4.8.2-4/5) skip then.
 - **Variable Byte Integers** (5.0 MQTT-1.5.5-1) bind the encoder: the server's own remaining lengths and
   property lengths must be minimal. Rejecting a client's non-minimal encoding is strict tier.
 - **Ill-formed UTF-8** in any string field is a Malformed Packet (3.1.1 MQTT-1.5.3-1, 5.0 MQTT-1.5.4-1): the
@@ -177,7 +201,8 @@ Where the specification allows several behaviours, the cases accept all of them.
   QoS 2 flow (PUBREL in PUBREC order) before asserting delivery, keep in-flight messages within the server's
   Receive Maximum, and require exactly one onward copy. PUBCOMP order is not asserted.
 - **Delivered QoS** must equal the minimum of the published QoS and the granted QoS. A server may grant less
-  than requested; cases compare with what was granted.
+  than requested; cases compare with what was granted, and a case that needs the requested QoS (to check a
+  QoS 1/2 flow or redelivery) skips when the grant is lower (`Client::subscribe_needing`).
 - **Overlapping subscriptions** (3.1.1 MQTT-3.3.5-1, 5.0 MQTT-3.3.4-2/4/5): one copy at the highest QoS, or
   one copy per subscription, are both accepted. The highest granted QoS and every Subscription
   Identifier must show up.
@@ -188,29 +213,47 @@ Where the specification allows several behaviours, the cases accept all of them.
 - **Wildcard support (3.1.1)**: a server may reject wildcard filters (0x80 or close); a granted one must match.
 - **Reason-code choices**: UNSUBACK for a filter that had no subscription may be 0x11 or 0x00. PUBACK and
   PUBREC may carry any code from their tables. PUBCOMP for an unknown PUBREL may be 0x92 or 0x00, but after
-  a message expired mid-flow it must be 0x00. Topic Alias 0 may be 0x94 or 0x82. An alias above the maximum
-  must be 0x94, Receive Maximum exceeded 0x93 (or a PUBREC ≥ 0x80 for the excess PUBLISH), Maximum Packet
-  Size exceeded 0x95, QoS above Maximum QoS 0x9B and RETAIN without Retain Available 0x9A, each only if a
-  DISCONNECT is sent. A Will QoS or Will Retain beyond the server's capability may be refused with any error
-  code (0x9B / 0x9A are only recommended).
+  a message expired mid-flow it must be 0x00. Sending a DISCONNECT before closing for an error is a SHOULD
+  (§4.13.1), and the code the spec names for an error is "used", not mandated: normal-tier cases require only
+  the close (and a code ≥ 0x80 if a DISCONNECT is sent) and note a code other than the named one (Topic Alias
+  0 or above the maximum 0x94, Maximum Packet Size exceeded 0x95, QoS above Maximum QoS 0x9B). Strict-tier
+  cases require the named code when a DISCONNECT is sent (alias above the maximum 0x94, Receive Maximum
+  exceeded 0x93 or a PUBREC ≥ 0x80 for the excess PUBLISH, RETAIN without Retain Available 0x9A). A Will
+  QoS or Will Retain beyond the server's capability may be refused with any error code.
 - **Maximum Packet Size (client's)**: every packet the server sends must fit; the server may drop Reason
   Strings and User Properties or never send them.
+- **Announced capabilities (5.0)**: a QoS 1/2 or retained PUBLISH above what CONNACK announced (Maximum QoS,
+  Retain Available), a wildcard SUBSCRIBE without Wildcard Subscription Available (or answered 0xA2), and a
+  Will refused with 0x9B / 0x9A end the case as skipped: the broker would rightly treat them as errors. The
+  client enforces this centrally; cases that send such a packet on purpose use `send_raw`.
 - **Capability-dependent cases** skip when the broker offers the feature they need it to lack (Maximum QoS,
   Retain Available, Topic Alias Maximum, wildcard support) or lacks a limit they need (Receive Maximum 65535,
   no Maximum Packet Size), and when the broker doesn't reject what they need rejected (authentication,
   PUBREC ≥ 0x80).
 - **Authorization probes**: `$SYS/conformance/<id>` is used to look for a topic the broker does not
   authorize; if the message gets through, the case skips. 3.1.1 accepts a PUBACK or a close; 3.1 requires a
-  normal PUBACK and SUBACK. Cases that send credentials skip if the broker refuses them; a 3.1 refusal must
-  be CONNACK 4 or 5.
+  normal PUBACK and SUBACK. If a PUBLISH to any `$` topic is refused, not only to `$SYS`, the broker
+  applies a reserved-topic rule (3.1.1 §4.7.2), not an authorization decision, and the 3.1 case skips.
+  Cases that send credentials skip if the broker refuses them; a 3.1 refusal must be CONNACK 4 or 5.
 - **Empty client id (5.0)**: a server may refuse it (0x85 then close, or a bare close); the assigned-id cases
   skip then.
 - **Payload Format Indicator 0** may be forwarded as absent, since absent means 0.
+- **Retained QoS 0**: a server MAY discard a retained QoS 0 message at any time (MQTT-3.3.1-7), so where a
+  scenario publishes one, its absence later is noted, not failed; retained Wills that must be found are QoS 1.
+- **Will timing (5.0)**: MQTT-3.1.2-8 requires the Will after the Will Delay or the session end, whichever is
+  first; publishing promptly is a SHOULD. An early Will fails; a late one is noted.
+- **DISCONNECT from the client** is followed by closing the client's side (the client MUST close; the server
+  only SHOULD), so cases never wait on the server to close a connection the client should end.
 - **Session takeover and wills (5.0)**: whether the old connection's will is published when a new
   connection takes over the client id is ambiguous (MQTT-3.1.2-8 "new Network Connection before the
   Will Delay Interval" vs §3.1.4), so it is not tested.
 - **3.1 `$` topics** (V31-A-9), 3.1 retained-message deletion (V31-2.1-10) and 3.1.1 QoS 0 offline queueing
-  are MAY behaviours and are not asserted. 3.1 QoS 0 offline queueing is asserted to be absent (V31-2.2-5).
+  are MAY behaviours and are not asserted. 3.1's "QoS 0 messages are never stored" (V31-2.2-5) is descriptive
+  prose, so 3.1 QoS 0 offline queueing is only noted.
+- **Ordering** binds only per topic and QoS (MQTT-4.6.0-5/6): messages queued at different QoS levels are
+  matched by payload, and their order is checked only when they arrive at the same QoS.
+- **Strict-tier failures** are client violations the broker did not reject. They never make a requirement
+  "violated", are counted separately (`strict_not_rejected` in the JSON summary) and do not fail the run.
 - **WebSocket**: responses to several packets in one frame may come in any order the spec allows; the server
   must select subprotocol `mqtt` and close on a text frame.
 - **No fixed sleeps for ordering across connections**: retained publishes that a later subscriber must find

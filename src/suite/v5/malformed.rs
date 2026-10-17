@@ -45,6 +45,16 @@ pub fn disconnect_with_invalid_fixed_header_flags_closes() {
     assert!(matches!(reason, None | Some(0x81)), "reason {reason:?}");
 }
 
+/// AUTH with a reserved fixed-header bit set is malformed whatever its content,
+/// so this needs no supported Authentication Method.
+pub fn auth_with_invalid_fixed_header_flags_closes() {
+    let broker = broker_or_skip!();
+    // Reason 0x19 (Re-authenticate), empty Property Length; flags 0001.
+    // req: 5.0/MQTT-3.15.1-1
+    // req: 5.0/MQTT-2.1.3-1
+    assert_error_closes(&broker, &frame(0xF1, &[0x19, 0x00]));
+}
+
 pub fn publish_with_qos_3_is_malformed() {
     let broker = broker_or_skip!();
     let mut body = Writer::new();
@@ -153,7 +163,8 @@ pub fn publish_with_subscription_identifier_closes() {
     assert_error_closes(&broker, &body.frame(0x30));
 }
 
-/// Strict: MQTT-3.3.2-8 binds the sender; closing relies on detection (MQTT-4.13.1-1).
+/// "A Topic Alias value of 0 … is a Protocol Error" (§3.3.4): the server must
+/// close (MQTT-4.13.1-1).
 pub fn topic_alias_zero_closes() {
     let broker = broker_or_skip!();
     let mut body = Writer::new();
@@ -161,10 +172,12 @@ pub fn topic_alias_zero_closes() {
         .properties(&[Property::new(prop::TOPIC_ALIAS, PropValue::TwoByte(0))])
         .raw(b"x");
     // req: 5.0/MQTT-3.3.2-8
+    // req: 5.0/MQTT-4.13.1-1
     assert_error_closes(&broker, &body.frame(0x30));
 }
 
-/// Strict: MQTT-3.2.2-17 / MQTT-3.3.2-9 bind the client; closing relies on detection (MQTT-4.13.1-1).
+/// "A Topic Alias value … greater than the Maximum Topic Alias is a Protocol
+/// Error" (§3.3.4): the server must close (MQTT-4.13.1-1).
 pub fn topic_alias_above_maximum_closes() {
     let broker = broker_or_skip!();
     let (mut c, ack) = session_with_ack(&broker);
@@ -184,18 +197,23 @@ pub fn topic_alias_above_maximum_closes() {
     c.send_raw(&body.frame(0x30)).unwrap();
     // req: 5.0/MQTT-3.2.2-17
     // req: 5.0/MQTT-3.3.2-9
+    // req: 5.0/MQTT-4.13.1-1
     let reason = c.expect_error_close(crate::default_timeout()).unwrap();
-    // DISCONNECT is optional; if sent it must be 0x94 (Topic Alias invalid).
-    if let Some(r) = reason {
-        // req: 5.0/MQTT-3.3.2-9
-        assert_eq!(r, 0x94, "alias {alias} with maximum {max}");
+    // DISCONNECT is optional (a SHOULD, §4.13.1); 0x94 is the code the spec
+    // names, so another one is noted (the strict flow case requires 0x94).
+    if let Some(r) = reason.filter(|r| *r != 0x94) {
+        crate::outcome::note(format!(
+            "alias {alias} with maximum {max}: DISCONNECT {r:#04x}, not 0x94"
+        ));
     }
 }
 
-/// Strict: MQTT-3.8.3-2 binds the client; closing relies on detection (MQTT-4.13.1-1).
+/// "A SUBSCRIBE packet with no Payload is a Protocol Error" (§3.8.3): the server
+/// must close (MQTT-4.13.1-1).
 pub fn subscribe_without_topic_filters_closes() {
     let broker = broker_or_skip!();
     // req: 5.0/MQTT-3.8.3-2
+    // req: 5.0/MQTT-4.13.1-1
     assert_error_closes(&broker, &frame(0x82, &[0x00, 0x01, 0x00]));
 }
 
@@ -212,10 +230,12 @@ pub fn subscription_options_with_reserved_bits_close() {
     }
 }
 
-/// Strict: MQTT-3.10.3-2 binds the client; closing relies on detection (MQTT-4.13.1-1).
+/// "An UNSUBSCRIBE packet with no Payload is a Protocol Error" (§3.10.3): the
+/// server must close (MQTT-4.13.1-1).
 pub fn unsubscribe_without_topic_filters_closes() {
     let broker = broker_or_skip!();
     // req: 5.0/MQTT-3.10.3-2
+    // req: 5.0/MQTT-4.13.1-1
     assert_error_closes(&broker, &frame(0xA2, &[0x00, 0x01, 0x00]));
 }
 
@@ -239,6 +259,8 @@ pub fn response_topic_with_ill_formed_utf8_closes() {
     let broker = broker_or_skip!();
     for value in BAD_UTF8 {
         // req: 5.0/MQTT-3.3.2-13
+        // req: 5.0/MQTT-1.5.4-1
+        // req: 5.0/MQTT-4.13.1-1
         assert_error_closes(
             &broker,
             &publish_with_raw_string_property(prop::RESPONSE_TOPIC, value),
@@ -250,6 +272,8 @@ pub fn content_type_with_ill_formed_utf8_closes() {
     let broker = broker_or_skip!();
     for value in BAD_UTF8 {
         // req: 5.0/MQTT-3.3.2-19
+        // req: 5.0/MQTT-1.5.4-1
+        // req: 5.0/MQTT-4.13.1-1
         assert_error_closes(
             &broker,
             &publish_with_raw_string_property(prop::CONTENT_TYPE, value),
@@ -265,6 +289,8 @@ pub fn subscribe_filter_with_ill_formed_utf8_closes() {
         // An encoding error is a Malformed Packet, not a refused filter, so
         // a SUBACK failure code is not enough.
         // req: 5.0/MQTT-3.8.3-1
+        // req: 5.0/MQTT-1.5.4-1
+        // req: 5.0/MQTT-4.13.1-1
         assert_error_closes(&broker, &body.frame(0x82));
     }
 }
@@ -275,6 +301,8 @@ pub fn unsubscribe_filter_with_ill_formed_utf8_closes() {
         let mut body = Writer::new();
         body.u16(1).properties(&[]).bin(filter);
         // req: 5.0/MQTT-3.10.3-1
+        // req: 5.0/MQTT-1.5.4-1
+        // req: 5.0/MQTT-4.13.1-1
         assert_error_closes(&broker, &body.frame(0xA2));
     }
 }

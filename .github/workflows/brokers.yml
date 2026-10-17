@@ -68,10 +68,13 @@ jobs:
                 -v "$PWD/ci/brokers/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" "$image"
               ws="ws://127.0.0.1:8080/" ;;
             emqx)
-              docker run -d --name broker -p 1883:1883 -p 8083:8083 "$image"
+              docker run -d --name broker -p 1883:1883 -p 8083:8083 \
+                -v "$PWD/ci/brokers/emqx-acl.conf:/opt/emqx/etc/acl.conf:ro" "$image"
               ws="ws://127.0.0.1:8083/mqtt" ;;
             hivemq-ce)
-              docker run -d --name broker -p 1883:1883 "$image" ;;
+              # The image's default config.xml has a WebSocket listener on 8000, path /mqtt.
+              docker run -d --name broker -p 1883:1883 -p 8000:8000 "$image"
+              ws="ws://127.0.0.1:8000/mqtt" ;;
             nanomq)
               docker run -d --name broker -p 1883:1883 -p 8083:8083 "$image"
               ws="ws://127.0.0.1:8083/mqtt" ;;

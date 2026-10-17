@@ -96,6 +96,38 @@ fn refused(broker: &Broker, connect: &Connect) -> Option<ConnAck> {
     ack
 }
 
+/// A CONNECT with an Authentication Method no server supports.
+fn unknown_auth_method_connect() -> Connect {
+    Connect::new(V, &unique_id("auth")).property(
+        prop::AUTHENTICATION_METHOD,
+        PropValue::Str("x-mqtt-testkit-unknown".into()),
+    )
+}
+
+/// Whether the broker refuses [`unknown_auth_method_connect`] as it must
+/// (MQTT-4.12.0-1). Cases that need that refusal as a precondition skip it
+/// when it is accepted: `unsupported_authentication_method_is_refused`
+/// already reports the violation.
+fn refuses_unknown_auth_method(broker: &Broker) -> bool {
+    let mut c = broker.open(V).unwrap();
+    c.send(&Packet::Connect(Box::new(unknown_auth_method_connect())))
+        .unwrap();
+    let accepted = matches!(
+        c.next_event(default_timeout()),
+        Ok(crate::Event::Packet(Packet::ConnAck(ConnAck {
+            code: 0,
+            ..
+        })))
+    );
+    if accepted {
+        crate::outcome::note(
+            "unknown Authentication Method accepted (see \
+             5.0/connect/unsupported_authentication_method_is_refused)",
+        );
+    }
+    !accepted
+}
+
 /// The SUBACK failure Reason Codes defined by the 5.0 table (3.9.3).
 const SUBACK_FAILURE_CODES: [u8; 9] = [0x80, 0x83, 0x87, 0x8F, 0x91, 0x97, 0x9E, 0xA1, 0xA2];
 

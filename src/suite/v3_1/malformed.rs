@@ -7,6 +7,7 @@ use crate::{Packet, Writer, broker_or_skip, default_timeout, frame, unique_id};
 
 use super::{assert_violation_closes, session};
 
+/// Strict: QoS 3 is only "reserved" in 3.1, which names no server reaction.
 pub fn publish_with_qos_3_closes() {
     let broker = broker_or_skip!();
     let mut body = Writer::new();
@@ -15,12 +16,14 @@ pub fn publish_with_qos_3_closes() {
     assert_violation_closes(&broker, &body.frame(0x36));
 }
 
+/// Strict: 3.1 limits Remaining Length to four bytes but names no server reaction.
 pub fn remaining_length_longer_than_four_bytes_closes() {
     let broker = broker_or_skip!();
     // req: 3.1/V31-2.1-2
     assert_violation_closes(&broker, &[0x30, 0xFF, 0xFF, 0xFF, 0xFF, 0x01]);
 }
 
+/// Strict: types 0 and 15 are only "reserved" in 3.1, which names no server reaction.
 pub fn reserved_message_types_close() {
     let broker = broker_or_skip!();
     for first in [0x00, 0xF0] {
@@ -37,6 +40,7 @@ pub fn subscribe_with_requested_qos_3_closes() {
     assert_violation_closes(&broker, &body.frame(0x82));
 }
 
+/// Strict: "This must not contain Topic wildcard characters" binds the publisher; 3.1 names no server reaction.
 pub fn publish_topic_with_wildcards_closes() {
     let broker = broker_or_skip!();
     for t in ["conformance/+", "conformance/#"] {

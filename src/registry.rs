@@ -237,7 +237,11 @@ pub fn run_for_cargo_test(id: &str) {
     let Some(case) = find(id) else {
         panic!("unknown conformance case {id}");
     };
-    (case.run)();
+    if let Err(payload) = std::panic::catch_unwind(case.run)
+        && !payload.is::<crate::outcome::SkipNow>()
+    {
+        std::panic::resume_unwind(payload);
+    }
 }
 
 #[cfg(test)]

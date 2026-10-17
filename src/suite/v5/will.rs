@@ -186,23 +186,51 @@ pub fn reconnecting_before_the_will_delay_suppresses_the_will() {
     super::forget(&broker, &id);
 }
 
+/// Waits for a Will that is due when the session ends (`due` after the
+/// connection drops) and at the latest when its Will Delay of `delay`
+/// elapses. MQTT-3.1.2-8 only requires publication after the earlier of the
+/// two; a later Will misses the SHOULD to publish promptly (§3.1.2.5), so it
+/// is noted, not failed.
+fn expect_will_due(sub: &mut crate::Client, due: Duration, delay: Duration, payload: &[u8]) {
+    let dropped = std::time::Instant::now();
+    // req: 5.0/MQTT-3.1.2-8
+    let p = sub.expect_publish(delay + default_timeout()).unwrap();
+    assert_eq!(p.payload, payload);
+    let took = dropped.elapsed();
+    if took > due + default_timeout() {
+        crate::outcome::note(format!(
+            "Will published {took:.1?} after the connection dropped, not when the session \
+             ended (~{due:?}); publishing promptly is a SHOULD"
+        ));
+    }
+}
+
+/// Will Delay of the two cases below: long enough to tell "when the session
+/// ends" from "when the Will Delay elapses", short enough to wait for.
+const LONG_WILL_DELAY: u32 = 6;
+
 pub fn session_end_before_the_will_delay_publishes_the_will() {
     let broker = broker_or_skip!();
     let t = topic();
     let mut sub = session(&broker);
     sub.subscribe(&t, 0).unwrap();
     let id = unique_id("wde");
-    // Will delay 60 s, but the session expires after 1 s: the will is
-    // published when the session ends.
-    let (c, _) = broker
-        .connect_ok(&with_expiry(&id, 1).will(delayed_will(&t, b"session-over", 60)))
+    // The session expires after 1 s, before the Will Delay: the will is due
+    // when the session ends.
+    let (c, ack) = broker
+        .connect_ok(&with_expiry(&id, 1).will(delayed_will(&t, b"session-over", LONG_WILL_DELAY)))
         .unwrap();
+    if super::connack_u32(&ack, prop::SESSION_EXPIRY_INTERVAL, 1) != 1 {
+        crate::outcome::skipped("broker changed the Session Expiry Interval of 1 s");
+        return;
+    }
     c.abort();
-    // req: 5.0/MQTT-3.1.2-8
-    let p = sub
-        .expect_publish(Duration::from_secs(1) + default_timeout())
-        .unwrap();
-    assert_eq!(p.payload, b"session-over");
+    expect_will_due(
+        &mut sub,
+        Duration::from_secs(1),
+        Duration::from_secs(LONG_WILL_DELAY.into()),
+        b"session-over",
+    );
 }
 
 pub fn will_delay_is_cut_short_by_session_expiry_0() {
@@ -211,15 +239,20 @@ pub fn will_delay_is_cut_short_by_session_expiry_0() {
     let mut sub = session(&broker);
     sub.subscribe(&t, 0).unwrap();
     // No Session Expiry Interval: the session ends with the connection, so
-    // the will goes out at once despite its 60 s delay.
+    // the will is due at once despite its delay.
     let (c, _) = broker
-        .connect_ok(&Connect::new(V, &unique_id("wd0")).will(delayed_will(&t, b"now", 60)))
+        .connect_ok(&Connect::new(V, &unique_id("wd0")).will(delayed_will(
+            &t,
+            b"now",
+            LONG_WILL_DELAY,
+        )))
         .unwrap();
     c.abort();
-    // req: 5.0/MQTT-3.1.2-8
-    assert_eq!(
-        sub.expect_publish(default_timeout()).unwrap().payload,
-        b"now"
+    expect_will_due(
+        &mut sub,
+        Duration::ZERO,
+        Duration::from_secs(LONG_WILL_DELAY.into()),
+        b"now",
     );
 }
 

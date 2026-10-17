@@ -47,6 +47,38 @@ pub struct Client {
     /// something else (e.g. a SUBACK); [`Client::next_event`] returns them
     /// first, in arrival order.
     stash: VecDeque<Packet>,
+    /// What the broker announced in a successful 5.0 CONNACK on this
+    /// connection, if any.
+    limits: Option<Limits>,
+    /// Whether a 3.1 server set fixed-header bits 3.1 marks unused.
+    unused_bits: bool,
+}
+
+/// Capabilities a 5.0 server announces in CONNACK (spec defaults when absent).
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    maximum_qos: u8,
+    retain_available: bool,
+    wildcards_available: bool,
+}
+
+impl Limits {
+    fn from_connack(ack: &ConnAck) -> Self {
+        let byte = |id, default: u8| match codec::find_prop(&ack.properties, id) {
+            Some(codec::PropValue::Byte(v)) => *v,
+            _ => default,
+        };
+        Self {
+            maximum_qos: byte(codec::prop::MAXIMUM_QOS, 2),
+            retain_available: byte(codec::prop::RETAIN_AVAILABLE, 1) != 0,
+            wildcards_available: byte(codec::prop::WILDCARD_SUBSCRIPTION_AVAILABLE, 1) != 0,
+        }
+    }
+}
+
+/// Whether a topic filter uses a wildcard level.
+fn has_wildcard(filter: &str) -> bool {
+    filter.contains('+') || filter.contains('#')
 }
 
 impl Client {
@@ -95,6 +127,8 @@ impl Client {
             closed: false,
             next_id: 0,
             stash: VecDeque::new(),
+            limits: None,
+            unused_bits: false,
         }
     }
 
@@ -153,7 +187,23 @@ impl Client {
     }
 
     /// Encodes and sends a packet with this client's version.
+    ///
+    /// A QoS 1/2 or retained PUBLISH that the broker announced it does not
+    /// support (5.0 Maximum QoS, Retain Available) ends the case as skipped:
+    /// the broker would rightly treat it as a Protocol Error. Cases that send
+    /// such a PUBLISH on purpose use [`Client::send_raw`].
     pub fn send(&mut self, packet: &Packet) -> Result<(), HarnessError> {
+        if let (Packet::Publish(p), Some(l)) = (packet, self.limits) {
+            if (1..=2).contains(&p.qos) && p.qos > l.maximum_qos {
+                crate::outcome::skip_now(format!(
+                    "broker announces Maximum QoS {}; the case needs QoS {}",
+                    l.maximum_qos, p.qos
+                ));
+            }
+            if p.retain && !l.retain_available {
+                crate::outcome::skip_now("broker announces Retain Available = 0");
+            }
+        }
         let bytes = packet.encode(self.version);
         self.send_raw(&bytes)
     }
@@ -163,11 +213,44 @@ impl Client {
         self.version = connect.version;
         self.send(&Packet::Connect(Box::new(connect.clone())))?;
         match self.expect_packet(default_timeout())? {
-            Packet::ConnAck(c) => Ok(c),
+            Packet::ConnAck(c) => {
+                if self.version.is_v5() && c.code == 0 {
+                    self.limits = Some(Limits::from_connack(&c));
+                }
+                Ok(c)
+            }
             p => Err(HarnessError::Unexpected(format!(
                 "expected CONNACK, got {p:?}"
             ))),
         }
+    }
+
+    /// In 3.1, the DUP / QoS / RETAIN bits of CONNACK, PUBACK, PUBREC,
+    /// PUBCOMP, SUBACK, UNSUBACK and PINGRESP are "Not used", and unused bits
+    /// only "should be set to zero" (§2.6). Clears them before decoding, so
+    /// such a packet does not fail an unrelated case, and records that they
+    /// were set (see [`Client::saw_unused_bits`]).
+    fn mask_unused_v31_bits(&mut self) {
+        if self.version != Version::V31 {
+            return;
+        }
+        if let Some(first) = self.buf.first_mut()
+            && matches!(*first >> 4, 2 | 4 | 5 | 7 | 9 | 11 | 13)
+            && *first & 0x0F != 0
+        {
+            crate::outcome::note(format!(
+                "3.1 server set unused fixed-header bits: {:#04x}",
+                *first
+            ));
+            *first &= 0xF0;
+            self.unused_bits = true;
+        }
+    }
+
+    /// Whether a 3.1 server set unused fixed-header bits on this connection.
+    #[must_use]
+    pub const fn saw_unused_bits(&self) -> bool {
+        self.unused_bits
     }
 
     /// Reads the next event (packet, close or timeout).
@@ -177,6 +260,7 @@ impl Client {
         }
         let deadline = Instant::now() + timeout;
         loop {
+            self.mask_unused_v31_bits();
             if let Some((p, n)) = codec::decode(&self.buf, self.version)? {
                 self.buf.drain(..n);
                 return Ok(Event::Packet(p));
@@ -260,18 +344,108 @@ impl Client {
         }
     }
 
+    /// Collects what the broker sends within `timeout`, stopping early at a
+    /// close. Returns the packets and whether the connection was closed;
+    /// unlike [`Client::expect_closed`], a connection left open is not an
+    /// error.
+    pub fn packets_until_close(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(Vec<Packet>, bool), HarnessError> {
+        let deadline = Instant::now() + timeout;
+        let mut seen = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.next_event(left)? {
+                Event::Packet(p) => seen.push(p),
+                Event::Closed => return Ok((seen, true)),
+                Event::Timeout => return Ok((seen, false)),
+            }
+        }
+    }
+
+    /// After a CONNECT with a foreign protocol name. The server MAY close, MAY
+    /// refuse with a non-zero CONNACK (and then MUST close), or MAY treat the
+    /// bytes under another protocol and say nothing; it MUST NOT accept them
+    /// as MQTT (MQTT-3.1.2-1). Returns a description of what it did.
+    pub fn expect_foreign_protocol_not_accepted(&mut self) -> Result<String, HarnessError> {
+        let (packets, closed) = self.packets_until_close(default_timeout())?;
+        match packets.as_slice() {
+            [] if closed => Ok("closed without CONNACK".to_owned()),
+            [] => Ok("left the connection open without answering".to_owned()),
+            [Packet::ConnAck(a)] if a.code != 0 => {
+                if !closed {
+                    self.expect_closed_eventually()?;
+                }
+                Ok(format!("CONNACK {:#04x}, then close", a.code))
+            }
+            other => Err(HarnessError::Unexpected(format!(
+                "processed as MQTT: {other:?}"
+            ))),
+        }
+    }
+
+    /// Like [`Client::expect_closed`], for a close the spec requires without
+    /// a deadline: waits up to 30 s and notes a close that came after
+    /// [`default_timeout`] (for example when a server ignores a packet and
+    /// closes at its own idle or CONNECT timeout).
+    pub fn expect_closed_eventually(&mut self) -> Result<Vec<Packet>, HarnessError> {
+        let started = Instant::now();
+        let packets = self.expect_closed(Duration::from_secs(30))?;
+        let took = started.elapsed();
+        if took > default_timeout() {
+            crate::outcome::note(format!("connection closed after {took:.1?}"));
+        }
+        Ok(packets)
+    }
+
     /// Waits for the broker to end the connection, allowing (in 5.0) a
     /// DISCONNECT first. Returns its reason code, `None` for a bare close.
-    /// Any other packet is an error.
+    /// In 3.x, where a server never sends DISCONNECT, a 5.0-style one before
+    /// the close is noted and otherwise treated as a bare close: it is not an
+    /// answer to the client's packet. Any other packet is an error.
     pub fn expect_disconnect(&mut self, timeout: Duration) -> Result<Option<u8>, HarnessError> {
         let packets = self.expect_closed(timeout)?;
         match packets.as_slice() {
             [] => Ok(None),
             [Packet::Disconnect(d)] if self.version.is_v5() => Ok(Some(d.reason.unwrap_or(0))),
+            [Packet::Disconnect(d)] => {
+                self.note_v3_disconnect(d.reason);
+                Ok(None)
+            }
             other => Err(HarnessError::Unexpected(format!(
                 "expected only a close (or a 5.0 DISCONNECT), got {other:?}"
             ))),
         }
+    }
+
+    /// Like [`Client::next_event`], except that in 3.x a DISCONNECT followed
+    /// by the close is noted and reported as [`Event::Closed`] (see
+    /// [`Client::expect_disconnect`]).
+    pub fn next_event_or_close(&mut self, timeout: Duration) -> Result<Event, HarnessError> {
+        match self.next_event(timeout)? {
+            Event::Packet(Packet::Disconnect(d)) if !self.version.is_v5() => {
+                match self.next_event(default_timeout())? {
+                    Event::Closed => {
+                        self.note_v3_disconnect(d.reason);
+                        Ok(Event::Closed)
+                    }
+                    other => Err(HarnessError::Unexpected(format!(
+                        "DISCONNECT {d:?}, then {other:?} instead of a close"
+                    ))),
+                }
+            }
+            e => Ok(e),
+        }
+    }
+
+    fn note_v3_disconnect(&self, reason: Option<u8>) {
+        let reason = reason.map_or_else(|| "none".to_owned(), |r| format!("{r:#04x}"));
+        crate::outcome::note(format!(
+            "server sent an MQTT {} client a DISCONNECT (reason {reason}) before closing; \
+             3.x defines none from the server",
+            self.version
+        ));
     }
 
     /// Waits for the broker to close the connection because of an error the
@@ -378,6 +552,29 @@ impl Client {
         self.subscribe_many(&[(filter, options)], Vec::new())
     }
 
+    /// Subscribes to one filter and requires a grant of at least the requested
+    /// QoS (`options & 3`). A server may grant less than requested (3.8.4), so
+    /// a lower grant ends the case as skipped: the case needs that QoS for
+    /// what it checks. A failure code fails the case.
+    ///
+    /// # Panics
+    ///
+    /// If the SUBSCRIBE fails or is refused (a case failure).
+    pub fn subscribe_needing(&mut self, filter: &str, options: u8) -> SubAck {
+        let ack = self
+            .subscribe(filter, options)
+            .unwrap_or_else(|e| panic!("SUBSCRIBE {filter}: {e}"));
+        let wanted = options & 0x03;
+        match ack.codes.first() {
+            Some(&g) if g >= 0x80 => panic!("SUBSCRIBE {filter} refused: {ack:?}"),
+            Some(&g) if g < wanted => crate::outcome::skip_now(format!(
+                "broker granted QoS {g} for a QoS {wanted} subscription; the case needs QoS {wanted}"
+            )),
+            Some(_) => ack,
+            None => panic!("SUBACK without a code: {ack:?}"),
+        }
+    }
+
     /// Sends one SUBSCRIBE with several filters (and 5.0 properties) and
     /// waits for its SUBACK.
     pub fn subscribe_many(
@@ -385,16 +582,30 @@ impl Client {
         filters: &[(&str, u8)],
         properties: Vec<Property>,
     ) -> Result<SubAck, HarnessError> {
+        let wildcard = filters.iter().any(|(f, _)| has_wildcard(f));
+        if wildcard && self.limits.is_some_and(|l| !l.wildcards_available) {
+            crate::outcome::skip_now("broker announces Wildcard Subscription Available = 0");
+        }
         let packet_id = self.next_packet_id();
         self.send(&Packet::Subscribe(Subscribe {
             packet_id,
             properties,
             filters: filters.iter().map(|(f, o)| ((*f).to_owned(), *o)).collect(),
         }))?;
-        self.wait_for(default_timeout(), "SUBACK", |p| match p {
+        let ack = self.wait_for(default_timeout(), "SUBACK", |p| match p {
             Packet::SubAck(s) if s.packet_id == packet_id => Some(s.clone()),
             _ => None,
-        })
+        })?;
+        // 0xA2: Wildcard Subscriptions not supported (5.0 §3.9.3).
+        if self.version.is_v5()
+            && filters
+                .iter()
+                .zip(&ack.codes)
+                .any(|((f, _), c)| *c == 0xA2 && has_wildcard(f))
+        {
+            crate::outcome::skip_now("broker refuses wildcard subscriptions (SUBACK 0xA2)");
+        }
+        Ok(ack)
     }
 
     /// Unsubscribes from one filter and waits for the UNSUBACK.
@@ -498,6 +709,33 @@ impl Client {
         }
     }
 
+    /// Waits for up to `n` PUBLISH packets without acknowledging them: the first
+    /// within `timeout`, each further one within [`crate::quiet_period`]. A
+    /// server may keep fewer messages in flight than the client allows (down
+    /// to one at a time), so fewer than `n` is not an error; the caller
+    /// adapts, and a note records how many were in flight.
+    pub fn expect_in_flight(
+        &mut self,
+        n: usize,
+        timeout: Duration,
+    ) -> Result<Vec<Publish>, HarnessError> {
+        let mut out = vec![self.expect_publish_unacked(timeout)?];
+        while out.len() < n {
+            match self.expect_publish_unacked(crate::quiet_period()) {
+                Ok(p) => out.push(p),
+                Err(HarnessError::Timeout(_)) => {
+                    crate::outcome::note(format!(
+                        "server kept {} of {n} QoS>0 messages in flight",
+                        out.len()
+                    ));
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
     /// Collects every PUBLISH that arrives within `window`, acknowledging
     /// each one (and answering PUBRELs). Any other packet or a close is an
     /// error.
@@ -555,16 +793,49 @@ impl Client {
         Ok(quiet_since.elapsed())
     }
 
-    /// Sends a normal DISCONNECT (reason 0x00 in 5.0) and closes the socket.
-    pub fn disconnect(mut self) -> Result<(), HarnessError> {
-        let d = if self.version.is_v5() {
+    /// Sends a normal DISCONNECT (reason 0x00 in 5.0) and closes the sending
+    /// side, as a client must after DISCONNECT (MQTT-3.14.4-1).
+    pub fn disconnect(self) -> Result<(), HarnessError> {
+        let d = self.normal_disconnect();
+        self.disconnect_with(d)
+    }
+
+    /// DISCONNECT with reason 0x00 in 5.0 (no reason code in 3.x).
+    fn normal_disconnect(&self) -> ReasonOnly {
+        if self.version.is_v5() {
             ReasonOnly {
                 reason: Some(0),
                 properties: Vec::new(),
             }
         } else {
             ReasonOnly::default()
-        };
+        }
+    }
+
+    /// Sends DISCONNECT `d` and closes the sending side (MQTT-3.14.4-1, 5.0
+    /// MQTT-3.14.4-2), so the broker sees the connection end even if it
+    /// leaves closing to the client (it only SHOULD close, §3.14.4).
+    pub fn disconnect_with(mut self, d: ReasonOnly) -> Result<(), HarnessError> {
+        self.send_disconnect_and_half_close(d)
+    }
+
+    /// [`Client::disconnect`], then waits up to [`default_timeout`] for the
+    /// broker to finish with the connection (its close), ignoring anything it
+    /// still sends. A broker that keeps its side open is not an error.
+    pub fn disconnect_and_drain(mut self) -> Result<(), HarnessError> {
+        let d = self.normal_disconnect();
+        self.send_disconnect_and_half_close(d)?;
+        let deadline = Instant::now() + default_timeout();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.next_event(left)? {
+                Event::Packet(_) => {}
+                Event::Closed | Event::Timeout => return Ok(()),
+            }
+        }
+    }
+
+    fn send_disconnect_and_half_close(&mut self, d: ReasonOnly) -> Result<(), HarnessError> {
         self.send(&Packet::Disconnect(d))?;
         match &mut self.transport {
             Transport::Tcp(stream) => {
@@ -578,7 +849,6 @@ impl Client {
         }
         Ok(())
     }
-
     /// Drops the TCP connection without DISCONNECT (simulated network
     /// failure; over WebSocket also without a close frame).
     pub fn abort(self) {

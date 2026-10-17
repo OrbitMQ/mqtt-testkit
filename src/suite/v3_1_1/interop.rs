@@ -85,15 +85,13 @@ fn connect(broker: &Broker, client_id: &str, clean: bool) -> (Client, bool) {
     (c, ack.session_present())
 }
 
-/// Sends DISCONNECT and waits for the broker to close the connection, so that
-/// the broker has finished with this connection before the scenario goes on.
-fn disconnect(mut c: Client) {
-    c.send(&Packet::Disconnect(crate::ReasonOnly::default()))
-        .unwrap();
-    // A delivery that raced the DISCONNECT may precede the close; it is
-    // irrelevant here.
-    c.expect_closed(default_timeout())
-        .unwrap_or_else(|e| panic!("broker kept the connection open after DISCONNECT: {e}"));
+/// Sends DISCONNECT, closes the client's side (the client MUST close,
+/// MQTT-3.14.4-1; the server only SHOULD, §3.14.4) and waits briefly for the
+/// broker to finish with the connection before the scenario goes on. A
+/// delivery that raced the DISCONNECT is irrelevant here.
+fn disconnect(c: Client) {
+    c.disconnect_and_drain()
+        .unwrap_or_else(|e| panic!("DISCONNECT: {e}"));
 }
 
 /// Erases any session the broker holds for `client_id` (Clean Session = 1 connect, then
@@ -246,16 +244,10 @@ pub fn connect_publish_subscribe_roundtrip() {
     )))
     .unwrap();
     // req: 3.1.1/MQTT-3.1.2-1
-    let refused = c
-        .expect_refused(default_timeout())
-        .unwrap_or_else(|e| panic!("CONNECT with protocol name \"Bogus\" not refused: {e}"));
-    crate::outcome::note(match refused {
-        Some(ack) => format!(
-            "unknown protocol name: CONNACK {:#04x}, then close",
-            ack.code
-        ),
-        None => "unknown protocol name: closed without CONNACK".to_owned(),
-    });
+    let what = c
+        .expect_foreign_protocol_not_accepted()
+        .unwrap_or_else(|e| panic!("CONNECT with protocol name \"Bogus\": {e}"));
+    crate::outcome::note(format!("unknown protocol name: {what}"));
 }
 
 /// Retained messages published at QoS 0, 1 and 2 are delivered (RETAIN = 1, original QoS) to a
@@ -281,12 +273,13 @@ pub fn retained_messages_set_and_clear() {
         "wildcard subscription refused: {granted:#04x}"
     );
     let got = receive(&mut c, 3);
-    assert_eq!(got.len(), 3, "expected 3 retained messages, got {got:?}");
     for (t, qos) in &set {
-        let p = got
-            .iter()
-            .find(|p| &p.topic == t)
-            .unwrap_or_else(|| panic!("no retained message for {t}: {got:?}"));
+        let Some(p) = got.iter().find(|p| &p.topic == t) else {
+            // A server MAY discard a retained QoS 0 message at any time (MQTT-3.3.1-7).
+            assert_eq!(*qos, 0, "no retained message for {t}: {got:?}");
+            crate::outcome::note(format!("retained QoS 0 message on {t} was not kept"));
+            continue;
+        };
         // req: 3.1.1/MQTT-3.3.1-5
         // req: 3.1.1/MQTT-3.3.1-6
         assert_eq!(p.payload, format!("retained{qos}").as_bytes());
@@ -524,15 +517,10 @@ pub fn resend_unacknowledged_on_session_resume() {
     let (t1, t3) = (tree.t1(), tree.t3());
     b.publish(&t1, b"", 1, false).unwrap();
     b.publish(&t3, b"", 2, false).unwrap();
-    let mut ignored = Vec::new();
-    while ignored.len() < 2 {
-        let p = b
-            .expect_publish_unacked(default_timeout())
-            .unwrap_or_else(|e| {
-                panic!("own publishes not forwarded before going offline ({ignored:?}): {e}")
-            });
-        ignored.push(p);
-    }
+    // A server may keep only one of them in flight, the other queued.
+    let ignored = b
+        .expect_in_flight(2, default_timeout())
+        .unwrap_or_else(|e| panic!("own publishes not forwarded before going offline: {e}"));
     disconnect(b);
 
     let (mut b, present) = connect(&broker, &id, false);
@@ -548,7 +536,15 @@ pub fn resend_unacknowledged_on_session_resume() {
         "expected the 2 unacknowledged messages, got {got:?}"
     );
     for (t, qos) in [(&t1, 1u8), (&t3, 2)] {
-        let first = ignored.iter().find(|p| &p.topic == t).unwrap();
+        let Some(first) = ignored.iter().find(|p| &p.topic == t) else {
+            // Never sent before going offline: delivered now as a new message.
+            assert!(
+                got.iter().any(|p| &p.topic == t),
+                "{t} lost: {:?}",
+                topics(&got)
+            );
+            continue;
+        };
         let again = got
             .iter()
             .find(|p| &p.topic == t)

@@ -83,13 +83,15 @@ pub fn disconnect_with_will_message_publishes_the_will() {
     let t = topic();
     let mut sub = session(&broker);
     sub.subscribe(&t, 0).unwrap();
-    let (mut c, _) = broker
+    let (c, _) = broker
         .connect_ok(&Connect::new(V, &unique_id("w4")).will(Will::new(&t, b"asked")))
         .unwrap();
-    c.send(&Packet::Disconnect(ReasonOnly {
+    // The Will is due once the connection is closed (MQTT-3.1.2-8); the
+    // sender of a DISCONNECT closes it (MQTT-3.14.4-2).
+    c.disconnect_with(ReasonOnly {
         reason: Some(0x04),
         properties: Vec::new(),
-    }))
+    })
     .unwrap();
     // req: 5.0/MQTT-3.1.2-8
     let p = sub.expect_publish(default_timeout()).unwrap();
@@ -100,6 +102,8 @@ pub fn will_retain_publishes_a_retained_will() {
     let broker = broker_or_skip!();
     let t = topic();
     let mut will = Will::new(&t, b"retained-will");
+    // QoS 1: a server MAY discard a retained QoS 0 message at any time.
+    will.qos = 1;
     will.retain = true;
     let mut live = session(&broker);
     live.subscribe(&t, 0).unwrap();

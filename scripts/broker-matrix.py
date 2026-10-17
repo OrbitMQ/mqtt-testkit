@@ -103,8 +103,10 @@ def render(rows: list[dict]) -> str:
             out.append(f"| {name} | {version} | – | – | – | – | {reason} |")
             continue
         strict = [c for c in cases if c.get("strict")]
-        strict_failed = sum(c["status"] in FAILED for c in strict)
-        strict_cell = f"{len(strict) - strict_failed}/{len(strict)} rejected" if strict else "–"
+        # Only strict cases that ran count: a skipped one says nothing about rejection.
+        strict_ran = [c for c in strict if c["status"] == "passed" or c["status"] in FAILED]
+        strict_passed = sum(c["status"] == "passed" for c in strict_ran)
+        strict_cell = f"{strict_passed}/{len(strict_ran)} rejected" if strict_ran else "–"
         bad = violated(cases)
         out.append(
             f"| {name} | {version} | {cell(cases, '3.1')} | {cell(cases, '3.1.1')} | {cell(cases, '5.0')} "
