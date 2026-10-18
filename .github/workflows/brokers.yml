@@ -46,8 +46,6 @@ jobs:
           - { id: emqx, name: EMQX, url: "https://www.emqx.com", image: "emqx/emqx:latest" }
           - { id: hivemq-ce, name: HiveMQ CE, url: "https://github.com/hivemq/hivemq-community-edition", image: "hivemq/hivemq-ce:latest" }
           - { id: nanomq, name: NanoMQ, url: "https://nanomq.io", image: "emqx/nanomq:latest" }
-          # OrbitMQ joins once it is public, e.g.:
-          # - { id: orbitmq, name: OrbitMQ, url: "https://github.com/OrbitMQ/broker", image: "ghcr.io/orbitmq/orbitmq:latest" }
     env:
       OUT: results/${{ matrix.id }}
     steps:
