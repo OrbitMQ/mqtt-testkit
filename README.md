@@ -32,123 +32,82 @@ many client violations the broker detected and rejected (rejecting them is allow
 
 | Broker | Version | MQTT 3.1 | MQTT 3.1.1 | MQTT 5.0 | Requirements violated | Strict tier |
 |---|---|---|---|---|---|---|
-| [Eclipse Mosquitto](https://mosquitto.org) | `2.1.2` | ❌ 87/92 · 4 failed · 1 skipped | ❌ 131/136 · 3 failed · 2 skipped | ❌ 200/209 · 5 failed · 4 skipped | 18 | 35/38 rejected |
-| [EMQX](https://www.emqx.com) | `6.3.1` | ❌ 81/92 · 10 failed · 1 skipped | ❌ 133/136 · 1 failed · 2 skipped | ❌ 194/209 · 8 failed · 7 skipped | 29 | 34/38 rejected |
-| [HiveMQ CE](https://github.com/hivemq/hivemq-community-edition) | `24.04` | ❌ 83/92 · 8 failed · 1 skipped | ❌ 112/136 · 14 failed · 10 skipped | ❌ 179/209 · 16 failed · 14 skipped | 62 | 35/38 rejected |
-| [NanoMQ](https://nanomq.io) | `0.25.6` | ❌ 64/92 · 26 failed · 2 skipped | ❌ 92/136 · 41 failed · 3 skipped | ❌ 145/209 · 57 failed · 7 skipped | 147 | 25/38 rejected |
+| [Eclipse Mosquitto](https://mosquitto.org) | `2.1.2` | ❌ 79/83 · 3 failed · 1 skipped | ❌ 134/138 · 2 failed · 2 skipped | ❌ 211/220 · 4 failed · 5 skipped | 14 | 34/38 rejected |
+| [EMQX](https://www.emqx.com) | `6.3.2` | ❌ 75/83 · 7 failed · 1 skipped | ❌ 135/138 · 1 failed · 2 skipped | ❌ 207/220 · 3 failed · 10 skipped | 16 | 33/37 rejected |
+| [HiveMQ CE](https://github.com/hivemq/hivemq-community-edition) | `24.04` | ❌ 76/83 · 4 failed · 3 skipped | ❌ 124/138 · 8 failed · 6 skipped | ❌ 201/220 · 5 failed · 14 skipped | 27 | 34/37 rejected |
+| [NanoMQ](https://nanomq.io) | `0.25.6` | ❌ 62/83 · 19 failed · 2 skipped | ❌ 100/138 · 35 failed · 3 skipped | ❌ 156/220 · 56 failed · 8 skipped | 129 | 31/35 rejected |
 
 <details><summary>Failing cases</summary>
 
-**Eclipse Mosquitto** (12)
+**Eclipse Mosquitto** (9)
 
 - `3.1/connect/client_id_longer_than_23_characters_gets_code_2`
-- `3.1/connect/mqisdp_with_another_level_is_refused`
 - `3.1/connect/will_qos_and_retain_are_disregarded_without_will_flag`
 - `3.1/malformed/subscribe_and_unsubscribe_with_dup_set_are_accepted`
-- `3.1.1/connect/data_after_a_rejected_connect_is_not_processed`
 - `3.1.1/connect/unsupported_protocol_level_gets_connack_0x01_then_close`
 - `3.1.1/websocket/server_selects_mqtt_subprotocol`
 - `5.0/flow/oversized_message_does_not_block_the_receive_window`
 - `5.0/interop/will_delay_versus_session_expiry`
 - `5.0/persistence/message_expiry_does_not_apply_once_a_qos2_publish_is_sent`
 - `5.0/websocket/server_selects_mqtt_subprotocol`
-- `5.0/will/will_delay_is_cut_short_by_session_expiry_0`
 
-**EMQX** (19)
+**EMQX** (11)
 
 - `3.1/connect/client_id_longer_than_23_characters_gets_code_2`
-- `3.1/connect/mqisdp_with_another_level_is_refused`
 - `3.1/connect/password_flag_without_password_string_is_accepted`
 - `3.1/connect/username_flag_without_username_string_is_accepted`
 - `3.1/connect/will_qos_and_retain_are_disregarded_without_will_flag`
 - `3.1/malformed/pubrel_with_dup_set_is_accepted`
 - `3.1/malformed/subscribe_and_unsubscribe_with_dup_set_are_accepted`
-- `3.1/persistence/qos0_messages_are_not_queued_while_offline`
 - `3.1/pubsub/unauthorized_publish_and_subscribe_are_acknowledged_normally`
-- `3.1/topics/valid_wildcard_placements_match`
 - `3.1.1/malformed/subscribe_with_invalid_requested_qos_closes`
-- `5.0/connect/connack_reason_codes_come_from_the_table`
-- `5.0/connect/data_after_a_refused_connect_is_ignored`
 - `5.0/connect/unsupported_authentication_method_is_refused`
 - `5.0/flow/oversized_message_does_not_block_the_receive_window`
-- `5.0/flow/refusing_connack_fits_the_clients_maximum_packet_size`
 - `5.0/malformed/subscription_options_with_reserved_bits_close`
-- `5.0/persistence/publish_rejected_with_an_error_ack_is_not_resent`
-- `5.0/shared/shared_message_rejected_by_a_member_is_not_offered_to_another`
 
-**HiveMQ CE** (38)
+**HiveMQ CE** (17)
 
 - `3.1/connect/client_id_longer_than_23_characters_gets_code_2`
-- `3.1/connect/mqisdp_with_another_level_is_refused`
 - `3.1/connect/username_flag_without_username_string_is_accepted`
 - `3.1/connect/will_qos_and_retain_are_disregarded_without_will_flag`
 - `3.1/malformed/subscribe_and_unsubscribe_with_dup_set_are_accepted`
-- `3.1/persistence/redelivery_keeps_the_original_order`
-- `3.1/pubsub/in_flight_deliveries_use_distinct_packet_identifiers`
-- `3.1/pubsub/unauthorized_publish_and_subscribe_are_acknowledged_normally`
-- `3.1.1/connect/first_packet_other_than_connect_closes`
 - `3.1.1/connect/ill_formed_utf8_user_name_closes`
 - `3.1.1/connect/password_present_without_flag_closes`
 - `3.1.1/connect/unsupported_protocol_level_gets_connack_0x01_then_close`
 - `3.1.1/connect/username_present_without_flag_closes`
 - `3.1.1/connect/will_fields_without_will_flag_close`
-- `3.1.1/interop/resend_unacknowledged_on_session_resume`
 - `3.1.1/malformed/pubrel_with_invalid_fixed_header_flags_closes`
 - `3.1.1/malformed/subscribe_with_ill_formed_utf8_filter_closes`
 - `3.1.1/malformed/unsubscribe_with_ill_formed_utf8_filter_closes`
-- `3.1.1/persistence/redelivery_keeps_the_original_order`
-- `3.1.1/pubsub/in_flight_deliveries_use_distinct_packet_identifiers`
-- `3.1.1/pubsub/pubrels_follow_the_order_of_the_pubrecs`
-- `3.1.1/pubsub/qos2_packet_identifier_stays_in_use_until_pubcomp`
-- `5.0/connect/connack_reason_codes_come_from_the_table`
-- `5.0/connect/first_packet_other_than_connect_closes_without_disconnect`
 - `5.0/connect/password_present_without_flag_is_refused`
 - `5.0/connect/unsupported_authentication_method_is_refused`
 - `5.0/connect/username_present_without_flag_is_refused`
-- `5.0/flow/refusing_connack_fits_the_clients_maximum_packet_size`
-- `5.0/flow/server_respects_the_clients_receive_maximum`
 - `5.0/malformed/pubrel_with_invalid_fixed_header_flags_closes`
-- `5.0/persistence/publish_rejected_with_an_error_ack_is_not_resent`
-- `5.0/persistence/redelivery_keeps_the_original_order`
-- `5.0/persistence/unsubscribe_completes_deliveries_already_started`
 - `5.0/properties/retained_message_expiry_is_reduced_by_the_waiting_time`
-- `5.0/pubsub/in_flight_deliveries_use_distinct_packet_identifiers`
-- `5.0/pubsub/qos2_identifier_stays_in_use_until_pubcomp`
-- `5.0/shared/interrupted_qos2_shared_delivery_is_not_redirected_when_the_session_ends`
-- `5.0/shared/interrupted_qos2_shared_delivery_resumes_on_the_same_client`
 
-**NanoMQ** (124)
+**NanoMQ** (110)
 
 - `3.1/connect/client_id_longer_than_23_characters_gets_code_2`
 - `3.1/connect/empty_client_id_gets_code_2`
-- `3.1/connect/mqisdp_with_another_level_is_refused`
-- `3.1/connect/password_without_username_is_refused`
 - `3.1/connect/will_qos_and_retain_are_disregarded_without_will_flag`
 - `3.1/lifecycle/keep_alive_expiry_closes_and_publishes_the_will`
-- `3.1/malformed/publish_topic_with_wildcards_closes`
 - `3.1/malformed/pubrel_with_dup_set_is_accepted`
-- `3.1/malformed/reserved_message_types_close`
-- `3.1/malformed/subscribe_with_requested_qos_3_closes`
 - `3.1/persistence/inbound_qos2_state_survives_a_reconnect`
-- `3.1/persistence/qos0_messages_are_not_queued_while_offline`
+- `3.1/persistence/qos0_messages_queued_while_offline_are_noted`
 - `3.1/persistence/qos1_and_qos2_messages_are_queued_while_offline`
 - `3.1/persistence/redelivery_keeps_the_original_order`
 - `3.1/persistence/unacknowledged_pubrel_is_resent_and_publish_is_not`
 - `3.1/persistence/unacknowledged_qos1_is_resent_with_dup_and_the_same_identifier`
 - `3.1/persistence/unacknowledged_qos2_publish_is_resent_with_dup`
-- `3.1/pubsub/qos0_messages_from_one_publisher_keep_their_order`
+- `3.1/pubsub/qos1_messages_from_one_publisher_keep_their_order`
 - `3.1/pubsub/qos2_duplicate_before_pubrel_is_not_delivered_twice`
 - `3.1/pubsub/qos2_onward_delivery_is_exactly_once_with_either_method`
 - `3.1/pubsub/qos2_repeat_without_dup_is_recognised_by_its_message_id`
 - `3.1/retain/empty_retained_message_is_delivered_to_current_subscribers`
-- `3.1/topics/invalid_topic_filters_are_rejected`
-- `3.1/topics/misplaced_wildcards_never_match`
 - `3.1/will/will_is_published_after_keep_alive_expiry`
 - `3.1/will/zero_length_will_message_is_published_empty`
 - `3.1.1/connect/connect_without_client_id_field_closes`
-- `3.1.1/connect/data_after_a_rejected_connect_is_not_processed`
 - `3.1.1/connect/empty_client_id_without_clean_session_is_rejected_with_0x02`
-- `3.1.1/connect/first_packet_other_than_connect_closes`
 - `3.1.1/connect/foreign_protocol_name_is_not_processed_as_mqtt`
 - `3.1.1/connect/password_flag_without_password_closes`
 - `3.1.1/connect/password_without_username_closes`
@@ -160,12 +119,10 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `3.1.1/interop/resend_unacknowledged_on_session_resume`
 - `3.1.1/lifecycle/keep_alive_expiry_closes_the_connection`
 - `3.1.1/malformed/pingreq_with_invalid_fixed_header_flags_closes`
-- `3.1.1/malformed/publish_topic_with_ill_formed_utf8_closes`
 - `3.1.1/malformed/reserved_packet_types_close`
 - `3.1.1/malformed/server_to_client_packet_from_client_closes`
-- `3.1.1/malformed/subscribe_with_ill_formed_utf8_filter_closes`
 - `3.1.1/malformed/subscribe_with_invalid_fixed_header_flags_closes`
-- `3.1.1/malformed/subscribe_with_invalid_requested_qos_closes`
+- `3.1.1/malformed/subscribe_without_topic_filters_closes`
 - `3.1.1/malformed/unsubscribe_with_ill_formed_utf8_filter_closes`
 - `3.1.1/malformed/unsubscribe_with_invalid_fixed_header_flags_closes`
 - `3.1.1/persistence/inbound_qos2_state_survives_a_reconnect`
@@ -180,24 +137,18 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `3.1.1/pubsub/qos0_messages_from_one_publisher_keep_their_order`
 - `3.1.1/pubsub/qos2_duplicate_before_pubrel_is_not_delivered_twice`
 - `3.1.1/retain/empty_retained_message_is_delivered_to_current_subscribers`
-- `3.1.1/topics/null_character_in_topic_filter_closes`
-- `3.1.1/topics/null_character_in_topic_name_closes`
 - `3.1.1/websocket/server_selects_mqtt_subprotocol`
 - `3.1.1/websocket/several_packets_in_one_frame_are_processed`
 - `3.1.1/will/will_is_published_after_keep_alive_expiry`
 - `3.1.1/will/will_is_published_only_once`
-- `5.0/connect/connack_reason_codes_come_from_the_table`
-- `5.0/connect/data_after_a_refused_connect_is_ignored`
-- `5.0/connect/first_packet_other_than_connect_closes_without_disconnect`
+- `5.0/connect/auth_without_authentication_method_is_a_protocol_error`
 - `5.0/connect/foreign_protocol_name_is_refused`
 - `5.0/connect/password_flag_without_password_is_refused`
 - `5.0/connect/unsupported_authentication_method_is_refused`
 - `5.0/connect/username_flag_without_username_is_refused`
 - `5.0/flow/receive_maximum_counts_qos2_until_pubcomp`
-- `5.0/flow/refusing_connack_fits_the_clients_maximum_packet_size`
 - `5.0/flow/server_respects_the_clients_receive_maximum`
 - `5.0/flow/topic_alias_mappings_do_not_survive_the_connection`
-- `5.0/flow/unmapped_topic_alias_is_a_protocol_error`
 - `5.0/interop/inbound_topic_alias_rules`
 - `5.0/interop/keep_alive_expiry_publishes_will`
 - `5.0/interop/message_expiry_while_queued`
@@ -208,12 +159,16 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `5.0/interop/will_on_keep_alive_timeout_with_properties`
 - `5.0/lifecycle/disconnect_with_will_message_publishes_the_will`
 - `5.0/lifecycle/keep_alive_expiry_closes_the_connection`
+- `5.0/lifecycle/server_sends_nothing_after_its_disconnect`
+- `5.0/malformed/auth_with_invalid_fixed_header_flags_closes`
 - `5.0/malformed/content_type_with_ill_formed_utf8_closes`
 - `5.0/malformed/reserved_packet_type_closes`
 - `5.0/malformed/response_topic_with_ill_formed_utf8_closes`
 - `5.0/malformed/subscribe_with_invalid_fixed_header_flags_closes`
+- `5.0/malformed/subscribe_without_topic_filters_closes`
 - `5.0/malformed/unsubscribe_filter_with_ill_formed_utf8_closes`
 - `5.0/malformed/unsubscribe_with_invalid_fixed_header_flags_closes`
+- `5.0/malformed/unsubscribe_without_topic_filters_closes`
 - `5.0/malformed/user_property_with_ill_formed_utf8_closes`
 - `5.0/persistence/client_identifier_selects_the_session`
 - `5.0/persistence/inbound_qos2_state_survives_a_reconnect`
@@ -231,16 +186,15 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `5.0/properties/queued_message_expiry_is_reduced_by_the_waiting_time`
 - `5.0/properties/retained_message_expiry_is_reduced_by_the_waiting_time`
 - `5.0/pubsub/inbound_dup_flag_is_not_propagated`
-- `5.0/pubsub/qos1_messages_from_one_publisher_keep_their_order`
+- `5.0/pubsub/qos0_messages_from_one_publisher_keep_their_order`
 - `5.0/pubsub/qos2_duplicate_before_pubrel_is_not_delivered_twice`
 - `5.0/pubsub/qos2_messages_from_one_publisher_keep_their_order`
 - `5.0/shared/interrupted_qos2_shared_delivery_resumes_on_the_same_client`
-- `5.0/shared/shared_message_rejected_by_a_member_is_not_offered_to_another`
-- `5.0/websocket/packets_straddling_frame_boundaries_are_processed`
 - `5.0/websocket/server_selects_mqtt_subprotocol`
 - `5.0/websocket/several_packets_in_one_frame_are_processed`
 - `5.0/will/session_end_before_the_will_delay_publishes_the_will`
 - `5.0/will/will_delay_interval_postpones_the_will`
+- `5.0/will/will_delay_is_cut_short_by_session_expiry_0`
 - `5.0/will/will_is_published_after_keep_alive_expiry`
 - `5.0/will/will_is_published_only_once`
 
