@@ -157,7 +157,7 @@ pub fn invalid_topic_filters_are_rejected() {
         }))
         .unwrap();
         // Allowed: SUBACK with failure code 0x80, or closing the connection.
-        match c.next_event(default_timeout()).unwrap() {
+        match c.next_event_or_close(default_timeout()).unwrap() {
             crate::Event::Packet(Packet::SubAck(s)) => {
                 // req: 3.1.1/MQTT-4.7.1-2
                 // req: 3.1.1/MQTT-4.7.1-3
@@ -180,7 +180,7 @@ pub fn empty_topic_filter_is_rejected() {
         filters: vec![(String::new(), 0)],
     }))
     .unwrap();
-    match c.next_event(default_timeout()).unwrap() {
+    match c.next_event_or_close(default_timeout()).unwrap() {
         crate::Event::Packet(Packet::SubAck(s)) => {
             // req: 3.1.1/MQTT-4.7.3-1
             assert_eq!(s.codes, [0x80]);
@@ -290,7 +290,7 @@ pub fn accepted_wildcard_filters_work_or_are_rejected() {
             filters: vec![(filter.clone(), 0)],
         }))
         .unwrap();
-        match c.next_event(default_timeout()).unwrap() {
+        match c.next_event_or_close(default_timeout()).unwrap() {
             crate::Event::Packet(Packet::SubAck(s)) if s.codes == [0x80] => {
                 // Rejected: what a server without wildcard support must do.
                 crate::outcome::note(format!("wildcard filter {filter:?} rejected"));

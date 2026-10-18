@@ -74,9 +74,13 @@ pub fn will_is_published_when_the_server_closes_for_a_protocol_violation() {
     let (mut c, _) = broker
         .connect_ok(&Connect::new(V, &unique_id("wpv")).will(Will::new(&t, b"violated")))
         .unwrap();
-    // PUBLISH with QoS 3: the server must close the connection.
+    // PUBLISH with QoS 3. 3.1 names no server reaction to it, so the case
+    // applies only when the server does close the connection.
     c.send_raw(&frame(0x36, &[0, 1, b'a', 0, 1])).unwrap();
-    let _ = c.expect_closed(default_timeout());
+    if c.expect_closed(default_timeout()).is_err() {
+        crate::outcome::skipped("server did not close the connection on a QoS 3 PUBLISH");
+        return;
+    }
     let p = sub.expect_publish(default_timeout()).unwrap();
     // req: 3.1/V31-2.2-8
     assert_eq!(p.payload, b"violated");

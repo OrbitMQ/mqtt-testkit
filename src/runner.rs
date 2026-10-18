@@ -136,6 +136,15 @@ fn execute(case: &'static Case) -> CaseResult {
     let duration = start.elapsed();
     let record = outcome::take();
     let (status, message) = match result {
+        Err(payload) if payload.is::<outcome::SkipNow>() => (
+            Status::Skipped,
+            Some(
+                record
+                    .skipped
+                    .clone()
+                    .unwrap_or_else(|| "skipped".to_owned()),
+            ),
+        ),
         Err(_) => (
             Status::Failed,
             Some(

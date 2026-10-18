@@ -101,6 +101,8 @@ pub fn will_retain_publishes_a_retained_will() {
     let mut live = session(&broker);
     live.subscribe(&t, 0).unwrap();
     let mut will = Will::new(&t, b"retained-will");
+    // QoS 1: a server MAY discard a retained QoS 0 message at any time.
+    will.qos = 1;
     will.retain = true;
     let (c, _) = broker
         .connect_ok(&Connect::new(V, &unique_id("wr")).will(will))

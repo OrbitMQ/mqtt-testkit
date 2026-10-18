@@ -8,6 +8,7 @@
 #           informative       MAY / SHOULD statements the suite deliberately does not assert
 requirement	category	reason
 3.1/V31-2.1-9	needs-capability	Retained messages surviving a restart needs the broker restarted on the same storage; the suite cannot restart an arbitrary broker.
+3.1/V31-2.2-5	informative	"QoS 0 messages are never stored" is descriptive prose in 3.1 §2.2, not a requirement; a stored QoS 0 message is noted (persistence/qos0_messages_queued_while_offline_are_noted).
 3.1/V31-2.2-6	informative	MAY: an administrative mechanism to delete stored sessions is optional and outside MQTT.
 3.1/V31-2.2-7	not-black-box	Client-side SHOULD about reserved CONNECT flag bit 0; a 3.1 server may accept or reject it, so both behaviours conform.
 3.1/V31-3.1-8	not-black-box	The CONNECT timeout is configurable and its value unspecified, so no observable deadline can be asserted.
@@ -17,7 +18,6 @@ requirement	category	reason
 3.1/V31-4.2-2	not-black-box	The retry timeout policy is configurable and unspecified.
 3.1/V31-4.2-4	informative	SHOULD: in-session retry timing is unspecified; redelivery on reconnect is asserted under V31-4.2-3.
 3.1/V31-A-9	informative	MAY: 3.1 defines no special $ topics; applying the 3.1.1 rule is optional.
-3.1.1/MQTT-3.2.2-6	not-black-box	Which failures have no fitting CONNACK return code is server-internal; malformed CONNECTs are covered by MQTT-3.1.4-1.
 3.1.1/MQTT-4.7.3-3	not-black-box	A topic over 65535 bytes cannot be encoded in the 2-byte length prefix, so no server behaviour differs.
 3.1.1/MQTT-4.8.0-2	not-black-box	A transient server-side processing error cannot be induced from outside the broker.
 3.1.1/MQTT-7.0.0-1	needs-capability	Bridge (outbound client) conformance needs a bridge configured to a second broker.
@@ -26,7 +26,6 @@ requirement	category	reason
 5.0/MQTT-4.2.0-1	not-black-box	Transport requirement trivially met: every case runs over TCP.
 5.0/MQTT-4.7.3-3	not-black-box	A topic over 65,535 bytes cannot be encoded in the 2-byte length prefix, so no server behaviour differs.
 5.0/MQTT-3.1.2-30	needs-capability	Client rule during an enhanced-auth exchange; observable only on a broker offering an Authentication Method.
-5.0/MQTT-3.15.1-1	needs-capability	Without a supported Authentication Method every AUTH is already a Protocol Error (MQTT-4.12.0-7, checked), so bad AUTH flags are indistinguishable.
 5.0/MQTT-3.15.2-1	needs-capability	The server sends AUTH only during enhanced authentication, which needs a broker offering an Authentication Method.
 5.0/MQTT-3.15.2-2	needs-capability	Server-sent AUTH exists only during enhanced authentication.
 5.0/MQTT-3.15.2-3	needs-capability	Server-sent AUTH exists only during enhanced authentication.

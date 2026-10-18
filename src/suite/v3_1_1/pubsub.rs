@@ -440,6 +440,8 @@ pub fn qos2_messages_from_one_publisher_keep_their_order() {
     ordered(2);
 }
 
+/// Strict: MQTT-4.6.0-2/-3 bind "a Client"; the server takes on §4.6 only "when
+/// delivering messages to each of its subscribers", where it sends no PUBACK/PUBREC.
 pub fn acknowledgements_follow_the_order_of_the_publishes() {
     let broker = broker_or_skip!();
     let t = topic();
@@ -491,15 +493,20 @@ pub fn in_flight_deliveries_use_distinct_packet_identifiers() {
         publisher.publish(&t, &[i], 1, false).unwrap();
     }
     let mut ids = HashSet::new();
-    for _ in 0..5 {
-        // Not acknowledged, so every identifier stays in use.
-        let p = sub.expect_publish_unacked(default_timeout()).unwrap();
+    // Not acknowledged, so every identifier stays in use.
+    let got = sub.expect_in_flight(5, default_timeout()).unwrap();
+    for p in &got {
         let id = p.packet_id.unwrap();
         // req: 3.1.1/MQTT-4.3.2-1
         // req: 3.1.1/MQTT-2.3.1-4
         assert!(
             id != 0 && ids.insert(id),
             "reused or zero id {id} in {ids:?}"
+        );
+    }
+    if got.len() < 2 {
+        crate::outcome::skipped(
+            "server keeps one QoS>0 message in flight: no identifiers to compare",
         );
     }
 }
@@ -606,7 +613,17 @@ pub fn qos2_packet_identifier_stays_in_use_until_pubcomp() {
     // PUBCOMP withheld: `id1` is still in use, so the next delivery must
     // pick another identifier.
     publisher.publish(&t, b"second", 2, false).unwrap();
-    let second = sub.expect_publish_unacked(default_timeout()).unwrap();
+    let Ok(second) = sub.expect_publish_unacked(quiet_period()) else {
+        // A server may hold the next message until this flow completes; then
+        // identifier reuse cannot be observed, but the message must follow.
+        sub.send(&Packet::PubComp(Ack::new(id1))).unwrap();
+        assert_eq!(
+            sub.expect_publish(default_timeout()).unwrap().payload,
+            b"second"
+        );
+        crate::outcome::skipped("server sends the next QoS 2 message only after PUBCOMP");
+        return;
+    };
     let id2 = second.packet_id.unwrap();
     // req: 3.1.1/MQTT-2.3.1-4
     assert!(
@@ -632,14 +649,18 @@ pub fn pubrels_follow_the_order_of_the_pubrecs() {
     for i in 0..5u8 {
         publisher.publish(&t, &[i], 2, false).unwrap();
     }
-    let ids: Vec<u16> = (0..5)
-        .map(|_| {
-            sub.expect_publish_unacked(default_timeout())
-                .unwrap()
-                .packet_id
-                .unwrap()
-        })
+    let ids: Vec<u16> = sub
+        .expect_in_flight(5, default_timeout())
+        .unwrap()
+        .iter()
+        .map(|p| p.packet_id.unwrap())
         .collect();
+    if ids.len() < 2 {
+        crate::outcome::skipped(
+            "server keeps one QoS 2 message in flight: no PUBREL order to check",
+        );
+        return;
+    }
     for id in &ids {
         sub.send(&Packet::PubRec(Ack::new(*id))).unwrap();
     }

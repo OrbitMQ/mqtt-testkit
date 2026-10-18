@@ -362,7 +362,7 @@ pub fn server_pubrel_reason_code_is_valid() {
     let broker = broker_or_skip!();
     let t = topic();
     let mut sub = session(&broker);
-    sub.subscribe(&t, 2).unwrap();
+    sub.subscribe_needing(&t, 2);
     let mut publisher = session(&broker);
     publisher.publish(&t, b"x", 2, false).unwrap();
     let p = sub.expect_publish_unacked(default_timeout()).unwrap();

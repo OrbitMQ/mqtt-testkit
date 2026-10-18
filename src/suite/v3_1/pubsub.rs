@@ -66,7 +66,7 @@ pub fn qos1_delivery_uses_a_packet_identifier_and_dup_0() {
     let broker = broker_or_skip!();
     let t = topic();
     let mut sub = session(&broker);
-    sub.subscribe(&t, 1).unwrap();
+    sub.subscribe_needing(&t, 1);
     let mut publisher = session(&broker);
     publisher.publish(&t, b"one", 1, false).unwrap();
     let p = sub.expect_publish(default_timeout()).unwrap();
@@ -80,7 +80,7 @@ pub fn qos2_delivery_follows_the_pubrec_pubrel_pubcomp_flow() {
     let broker = broker_or_skip!();
     let t = topic();
     let mut sub = session(&broker);
-    sub.subscribe(&t, 2).unwrap();
+    sub.subscribe_needing(&t, 2);
     let mut publisher = session(&broker);
     publisher.publish(&t, b"two", 2, false).unwrap();
     let p = sub.expect_publish_unacked(default_timeout()).unwrap();
@@ -392,6 +392,9 @@ pub fn qos2_messages_from_one_publisher_keep_their_order() {
     ordered(2);
 }
 
+/// Strict: 3.1 ordering binds only an implementation that offers ordering
+/// guarantees ("to provide any guarantees regarding the ordering of messages it
+/// must ensure each stage", §4.3).
 pub fn acknowledgements_follow_the_order_of_the_publishes() {
     let broker = broker_or_skip!();
     let t = topic();
@@ -442,15 +445,20 @@ pub fn in_flight_deliveries_use_distinct_packet_identifiers() {
         publisher.publish(&t, &[i], 1, false).unwrap();
     }
     let mut ids = HashSet::new();
-    for _ in 0..5 {
-        // Not acknowledged, so every identifier stays in use.
-        let p = sub.expect_publish_unacked(default_timeout()).unwrap();
+    // Not acknowledged, so every identifier stays in use.
+    let got = sub.expect_in_flight(5, default_timeout()).unwrap();
+    for p in &got {
         let id = p.packet_id.unwrap();
         // req: 3.1/V31-2.4-2
         // req: 3.1/V31-2.4-3
         assert!(
             id != 0 && ids.insert(id),
             "reused or zero id {id} in {ids:?}"
+        );
+    }
+    if got.len() < 2 {
+        crate::outcome::skipped(
+            "server keeps one QoS>0 message in flight: no identifiers to compare",
         );
     }
 }
@@ -499,7 +507,7 @@ pub fn message_ids_appear_exactly_where_required() {
     let broker = broker_or_skip!();
     let t = topic();
     let mut sub = session(&broker);
-    sub.subscribe(&t, 2).unwrap();
+    sub.subscribe_needing(&t, 2);
     let mut publisher = session(&broker);
     // QoS 0: no Message ID in either direction. The payload starts with
     // bytes that look like one, so an inserted or stripped ID shows.
@@ -603,6 +611,19 @@ pub fn qos2_repeat_without_dup_is_recognised_by_its_message_id() {
     assert_eq!(before + after, 1, "before PUBREL {before}, after {after}");
 }
 
+/// Whether a QoS 1 PUBLISH to `topic` gets its PUBACK.
+fn publish_is_acked(broker: &crate::Broker, topic: &str) -> bool {
+    let mut c = session(broker);
+    let mut p = Publish::new(topic, b"acl");
+    p.qos = 1;
+    p.packet_id = Some(0x0B0B);
+    c.send(&Packet::Publish(p)).unwrap();
+    matches!(
+        c.next_event(default_timeout()),
+        Ok(Event::Packet(Packet::PubAck(a))) if a.packet_id == 0x0B0B
+    )
+}
+
 pub fn unauthorized_publish_and_subscribe_are_acknowledged_normally() {
     let broker = broker_or_skip!();
     // A probe for a topic the broker reserves: `$SYS/...` is closed to
@@ -641,6 +662,15 @@ pub fn unauthorized_publish_and_subscribe_are_acknowledged_normally() {
     if delivered {
         crate::outcome::skipped(format!(
             "broker authorizes clients on {t}; no unauthorized topic to probe"
+        ));
+        return;
+    }
+    if !acked && !publish_is_acked(&broker, &format!("$mqtt-testkit/{}", unique_id("acl"))) {
+        // Every `$` topic is refused, not just `$SYS`: a reserved-topic rule
+        // (3.1.1 §4.7.2, which V31-A-9 lets a server apply), not an
+        // authorization decision.
+        crate::outcome::skipped(format!(
+            "broker refuses PUBLISH to any `$` topic; {t} is not an authorization probe"
         ));
         return;
     }

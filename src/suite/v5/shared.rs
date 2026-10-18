@@ -40,19 +40,21 @@ fn group() -> String {
     unique_id("g")
 }
 
-pub fn each_message_goes_to_exactly_one_group_member() {
-    let broker = broker_or_skip!();
-    if !shared_available(&broker) {
-        return;
+/// Publishes 20 QoS 1 messages to a two-member shared subscription and counts
+/// how often each payload arrives; `None` (after a skip) without shared
+/// subscriptions.
+fn shared_deliveries(broker: &crate::Broker) -> Option<(HashMap<u8, usize>, u8)> {
+    if !shared_available(broker) {
+        return None;
     }
     let t = topic();
     let filter = format!("$share/{}/{t}", group());
-    let mut members: Vec<Client> = (0..2).map(|_| session(&broker)).collect();
+    let mut members: Vec<Client> = (0..2).map(|_| session(broker)).collect();
     for m in &mut members {
         let ack = m.subscribe(&filter, 1).unwrap();
         assert!(ack.codes[0] <= 1, "{ack:?}");
     }
-    let mut publisher = session(&broker);
+    let mut publisher = session(broker);
     let n = 20u8;
     for i in 0..n {
         publisher.publish(&t, &[i], 1, false).unwrap();
@@ -64,12 +66,26 @@ pub fn each_message_goes_to_exactly_one_group_member() {
             *seen.entry(p.payload[0]).or_default() += 1;
         }
     }
-    // No message is lost: the shared subscription is a matching
-    // subscription (4.5.0-1).
+    Some((seen, n))
+}
+
+pub fn shared_subscription_loses_no_message() {
+    let broker = broker_or_skip!();
+    let Some((seen, n)) = shared_deliveries(&broker) else {
+        return;
+    };
+    // The shared subscription is a matching subscription (4.5.0-1).
     // req: 5.0/MQTT-4.5.0-1
     assert_eq!(seen.len(), usize::from(n), "lost messages: {seen:?}");
-    // Section 4.8.2 sends each message to only one session of the group;
-    // that text is not a numbered normative statement, so it is uncited.
+}
+
+/// Section 4.8.2 sends each message to only one session of the group. That text
+/// is not a numbered normative statement, so this case cites none.
+pub fn each_message_goes_to_exactly_one_group_member() {
+    let broker = broker_or_skip!();
+    let Some((seen, _)) = shared_deliveries(&broker) else {
+        return;
+    };
     assert!(seen.values().all(|c| *c == 1), "duplicates: {seen:?}");
 }
 
@@ -197,7 +213,17 @@ pub fn interrupted_qos2_shared_delivery_resumes_on_the_same_client() {
     let filter = format!("$share/{}/{t}", group());
     let id = unique_id("sh4");
     let (mut a, _) = persistent(&broker, &id);
-    a.subscribe(&filter, 2).unwrap();
+    let granted = a.subscribe(&filter, 2).unwrap().codes;
+    if granted != [2] {
+        // A server may grant less than QoS 2; a QoS 1 delivery is not bound
+        // by MQTT-4.8.2-4/5.
+        crate::outcome::skipped(format!(
+            "shared subscription granted {granted:02x?}, not QoS 2"
+        ));
+        a.abort();
+        forget(&broker, &id);
+        return;
+    }
     let mut publisher = session(&broker);
     publisher.publish(&t, b"exactly-a", 2, false).unwrap();
     let first = a.expect_publish_unacked(default_timeout()).unwrap();
@@ -237,7 +263,16 @@ pub fn interrupted_qos2_shared_delivery_is_not_redirected_when_the_session_ends(
     let filter = format!("$share/{}/{t}", group());
     // Session Expiry Interval 0: the session ends with the connection.
     let mut a = session(&broker);
-    a.subscribe(&filter, 2).unwrap();
+    let granted = a.subscribe(&filter, 2).unwrap().codes;
+    if granted != [2] {
+        // A server may grant less than QoS 2; a QoS 1 delivery is not bound
+        // by MQTT-4.8.2-4/5.
+        crate::outcome::skipped(format!(
+            "shared subscription granted {granted:02x?}, not QoS 2"
+        ));
+        a.abort();
+        return;
+    }
     let mut publisher = session(&broker);
     publisher.publish(&t, b"lost-with-a", 2, false).unwrap();
     a.expect_publish_unacked(default_timeout()).unwrap();
@@ -271,6 +306,14 @@ fn reject_everything(members: &mut [Client]) -> Vec<Vec<u8>> {
                     m.send(&reply).unwrap();
                     got.push(p.payload);
                     last = Instant::now();
+                }
+                // Not required after PUBREC 0x80 (MQTT-4.3.3-4), not forbidden.
+                Event::Packet(Packet::PubRel(a)) => {
+                    crate::outcome::note(format!(
+                        "PUBREL {} sent after the client's PUBREC 0x80",
+                        a.packet_id
+                    ));
+                    m.send(&Packet::PubComp(Ack::new(a.packet_id))).unwrap();
                 }
                 Event::Timeout => {}
                 other => panic!("expected a PUBLISH, got {other:?}"),
