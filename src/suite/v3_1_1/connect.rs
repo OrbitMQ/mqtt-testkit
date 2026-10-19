@@ -462,3 +462,48 @@ pub fn data_after_a_rejected_connect_is_not_processed() {
         "PUBLISH after a rejected CONNECT was stored: {retained:?}"
     );
 }
+
+/// A server refusing a CONNECT for a reason that has no 3.1.1 return code
+/// (1 to 5) must close silently: a CONNACK with any other code is the
+/// violation. Will Topics that are not valid Topic Names (wildcards, empty)
+/// are refusals no return code describes; a server may also accept them, or
+/// pick a return code it deems fitting (e.g. 5, Not Authorized).
+pub fn refusal_without_a_fitting_return_code_sends_no_connack() {
+    let broker = broker_or_skip!();
+    let mut refused = 0;
+    for will_topic in ["conformance/+/will", "conformance/will/#", ""] {
+        let connect = Connect::new(V, &unique_id("nofit")).will(Will::new(will_topic, b"x"));
+        let mut c = broker.open(V).unwrap();
+        c.send(&Packet::Connect(Box::new(connect.clone()))).unwrap();
+        match c.next_event(default_timeout()).unwrap() {
+            crate::Event::Packet(Packet::ConnAck(a)) if a.code == 0 => {
+                // Accepted: no check failed. A clean DISCONNECT discards the will.
+                crate::outcome::note(format!("will topic {will_topic:?} accepted"));
+                c.disconnect().unwrap();
+            }
+            crate::Event::Packet(Packet::ConnAck(a)) => {
+                // req: 3.1.1/MQTT-3.2.2-6
+                assert!(
+                    (1..=5).contains(&a.code),
+                    "will topic {will_topic:?}: refused with CONNACK return code {:#04x}, \
+                     which Table 3.1 does not define; with no fitting code the server must \
+                     close without a CONNACK",
+                    a.code
+                );
+                crate::outcome::note(format!(
+                    "will topic {will_topic:?} refused with return code {:#04x}",
+                    a.code
+                ));
+                c.expect_closed(default_timeout()).unwrap();
+                refused += 1;
+            }
+            crate::Event::Closed => refused += 1,
+            other => {
+                panic!("will topic {will_topic:?}: expected CONNACK or a close, got {other:?}")
+            }
+        }
+    }
+    if refused == 0 {
+        crate::outcome::skipped("broker accepted every CONNECT; no refusal to observe");
+    }
+}

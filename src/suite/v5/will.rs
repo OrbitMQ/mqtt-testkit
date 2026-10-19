@@ -300,3 +300,52 @@ pub fn will_properties_are_forwarded_with_user_property_order() {
         Some(&PropValue::Bin(vec![0, 1, 2]))
     );
 }
+
+pub fn payload_fields_are_read_in_order() {
+    let broker = broker_or_skip!();
+    let t = topic();
+    let mut sub = session(&broker);
+    sub.subscribe(&t, 0).unwrap();
+    // Every optional field present: Client Identifier, Will Properties, Will
+    // Topic, Will Payload, User Name, Password. Each holds a distinct value,
+    // so reading any of them out of order changes what the will looks like.
+    let mut will = Will::new(&t, b"ordered-will");
+    will.properties = vec![
+        Property::new(prop::CONTENT_TYPE, PropValue::Str("text/x-ordered".into())),
+        Property::new(
+            prop::USER_PROPERTY,
+            PropValue::Pair("field".into(), "will-properties".into()),
+        ),
+    ];
+    let connect = Connect::new(V, &unique_id("ord"))
+        .will(will)
+        .username("conformance")
+        .password(b"conformance-pw");
+    let (mut c, ack) = broker.connect(&connect).unwrap();
+    if ack.code != 0 {
+        // A broker that checks credentials may refuse these (0x86 / 0x87).
+        let _ = c.expect_closed(default_timeout());
+        crate::outcome::skipped(format!(
+            "broker refused a CONNECT with user name and password (code {:#04x})",
+            ack.code
+        ));
+        return;
+    }
+    c.abort();
+    let p = sub.expect_publish(default_timeout()).unwrap();
+    // req: 5.0/MQTT-3.1.3-1
+    assert_eq!(
+        (p.topic.as_str(), p.payload.as_slice()),
+        (t.as_str(), &b"ordered-will"[..])
+    );
+    // req: 5.0/MQTT-3.1.3-1
+    assert_eq!(
+        crate::find_prop(&p.properties, prop::CONTENT_TYPE),
+        Some(&PropValue::Str("text/x-ordered".into()))
+    );
+    // req: 5.0/MQTT-3.1.3-1
+    assert_eq!(
+        super::props_of(&p.properties, prop::USER_PROPERTY),
+        vec![PropValue::Pair("field".into(), "will-properties".into())]
+    );
+}
