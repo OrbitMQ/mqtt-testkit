@@ -22,6 +22,7 @@ pub fn will_is_published_at_its_qos() {
     c.abort();
     let p = sub.expect_publish(default_timeout()).unwrap();
     // req: 3.1/V31-2.2-9
+    // req: 3.1/V31-3.8-3
     assert_eq!(p.qos, granted.min(1), "{p:?}");
     assert_eq!(p.payload, b"q1-will");
 }

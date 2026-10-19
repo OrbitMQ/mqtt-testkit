@@ -331,7 +331,7 @@ pub fn empty_client_id_requires_clean_session() {
 
     let (c, ack) = broker.connect(&connect_packet("", true)).unwrap();
     if ack.code == 0 {
-        // req: 3.1.1/MQTT-3.1.3-6
+        // req: 3.1.1/MQTT-3.2.2-1
         assert!(!ack.session_present());
         disconnect(c);
     } else {
@@ -569,8 +569,9 @@ pub fn subscribe_refused_by_policy() {
         .subscribe(&filter, 2)
         .unwrap_or_else(|e| panic!("SUBSCRIBE to denied filter {filter:?}: {e}"));
     disconnect(c);
-    // req: 3.1.1/MQTT-3.9.3-2
+    // req: 3.1.1/MQTT-3.8.4-5
     assert_eq!(ack.codes.len(), 1, "{ack:?}");
+    // req: 3.1.1/MQTT-3.9.3-2
     match ack.codes[0] {
         0x80 => {}
         code @ 0..=2 => crate::outcome::skipped(format!(
@@ -603,20 +604,23 @@ pub fn dollar_topics_hidden_from_leading_wildcards() {
     let mut p = Publish::new(&dollar, b"");
     p.qos = 1;
     if let Err(e) = b.publish_packet(p) {
-        crate::outcome::note(format!("broker refused the PUBLISH to {dollar}: {e}"));
+        // Nothing was routed, so nothing about matching can be observed.
+        crate::outcome::skipped(format!("broker refused the PUBLISH to {dollar}: {e}"));
         disconnect(exact);
         return;
     }
     let got = receive(&mut b, 0);
-    // req: 3.1.1/MQTT-4.7.2-1
-    assert!(got.is_empty(), "{filter} matched {:?}", topics(&got));
     let routed = receive(&mut exact, 0);
+    disconnect(exact);
     if routed.is_empty() {
-        crate::outcome::note(format!(
+        crate::outcome::skipped(format!(
             "broker accepted but did not route the PUBLISH to {dollar} (no exact subscriber got it)"
         ));
+        disconnect(b);
+        return;
     }
-    disconnect(exact);
+    // req: 3.1.1/MQTT-4.7.2-1
+    assert!(got.is_empty(), "{filter} matched {:?}", topics(&got));
 
     // Control: the same leaf under a plain first level does match.
     b.publish(&plain, b"", 1, false).unwrap();

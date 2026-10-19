@@ -18,6 +18,8 @@ pub fn retained_message_is_sent_to_new_subscribers_with_retain_1() {
     // req: 5.0/MQTT-3.3.1-5
     // req: 5.0/MQTT-3.3.1-9
     assert_eq!(p.payload, b"kept");
+    // "These messages are sent with the RETAIN flag set to 1" (§3.3.1.3,
+    // not a numbered statement).
     assert!(p.retain, "{p:?}");
     // The stored QoS (1) is delivered, as the subscription allows it.
     // req: 5.0/MQTT-3.3.1-5
@@ -193,8 +195,10 @@ pub fn retained_publish_without_retain_available_is_disconnected_with_0x9a() {
         .unwrap();
     // req: 5.0/MQTT-3.2.2-14
     let reason = c.expect_error_close(default_timeout()).unwrap();
-    if let Some(r) = reason {
-        // req: 5.0/MQTT-3.2.2-14
-        assert_eq!(r, 0x9A, "Retain not supported");
+    // 0x9A is a SHOULD (§3.2.2.3.5); any error code is allowed and noted.
+    if let Some(r) = reason.filter(|r| *r != 0x9A) {
+        crate::outcome::note(format!(
+            "DISCONNECT {r:#04x}, not 0x9A (Retain not supported)"
+        ));
     }
 }

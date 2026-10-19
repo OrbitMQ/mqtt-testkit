@@ -21,7 +21,7 @@ pub fn will_is_published_at_its_qos() {
         .unwrap();
     c.abort();
     let p = sub.expect_publish(default_timeout()).unwrap();
-    // req: 3.1.1/MQTT-3.1.2-9
+    // req: 3.1.1/MQTT-3.8.4-6
     assert_eq!(p.qos, granted.min(1), "{p:?}");
     assert_eq!(p.payload, b"q1-will");
 }
@@ -37,7 +37,9 @@ pub fn will_without_retain_is_not_retained() {
     c.abort();
     let p = sub.expect_publish(default_timeout()).unwrap();
     assert_eq!(p.payload, b"plain");
-    // req: 3.1.1/MQTT-3.1.2-16
+    // A live subscriber gets RETAIN 0 even for a retained will (MQTT-3.3.1-9);
+    // the late subscriber below is what checks MQTT-3.1.2-16.
+    // req: 3.1.1/MQTT-3.3.1-9
     assert!(!p.retain);
     let mut late = session(&broker);
     late.subscribe(&t, 0).unwrap();
@@ -97,10 +99,15 @@ pub fn will_is_published_only_once() {
         .unwrap();
     c.abort();
     // Exactly one copy: once published, the will is gone from the session.
-    let got = sub.collect_publishes(quiet_period()).unwrap();
+    // The spec sets no deadline for the first copy.
+    let first = sub.expect_publish(default_timeout()).unwrap();
+    let more = sub.collect_publishes(quiet_period()).unwrap();
     // req: 3.1.1/MQTT-3.1.2-10
     assert_eq!(
-        got.iter().map(|p| p.payload.as_slice()).collect::<Vec<_>>(),
+        std::iter::once(&first)
+            .chain(&more)
+            .map(|p| p.payload.as_slice())
+            .collect::<Vec<_>>(),
         [&b"once"[..]]
     );
     // Reconnect without a will and drop again: the published will was
@@ -165,7 +172,9 @@ pub fn payload_fields_are_read_in_order() {
     }
     c.abort();
     let p = sub.expect_publish(default_timeout()).unwrap();
+    // The server read the payload fields in order and published the will.
     // req: 3.1.1/MQTT-3.1.3-1
+    // req: 3.1.1/MQTT-3.1.2-8
     assert_eq!(
         (p.topic.as_str(), p.payload.as_slice()),
         (t.as_str(), &b"ordered-will"[..])

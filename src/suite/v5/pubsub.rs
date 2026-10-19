@@ -198,7 +198,7 @@ pub fn suback_has_one_code_per_filter_in_order() {
     for (code, (_, requested)) in ack.codes.iter().zip(&filters) {
         // req: 5.0/MQTT-3.9.3-2
         assert!(
-            *code <= *requested || *code >= 0x80,
+            *code <= *requested || super::SUBACK_FAILURE_CODES.contains(code),
             "code {code:#04x} for requested QoS {requested}"
         );
     }
@@ -494,12 +494,16 @@ pub fn message_reaches_every_matching_subscriber() {
     let mut publisher = session(&broker);
     publisher.publish(&t, b"all", 1, false).unwrap();
     for s in &mut subs {
+        // With a shared broker "conformance/+" can see other tests' traffic:
+        // read until the message on `t` arrives.
         // req: 5.0/MQTT-4.5.0-1
-        let p = s.expect_publish(default_timeout()).unwrap();
-        // With a shared broker "conformance/+" can see other tests' traffic.
-        if p.topic == t {
-            assert_eq!(p.payload, b"all");
-        }
+        let p = loop {
+            let p = s.expect_publish(default_timeout()).unwrap();
+            if p.topic == t {
+                break p;
+            }
+        };
+        assert_eq!(p.payload, b"all");
     }
 }
 

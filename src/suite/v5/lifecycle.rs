@@ -179,6 +179,8 @@ pub fn server_sends_nothing_after_its_disconnect() {
     for i in 10..20u8 {
         publisher.publish(&t, &[i], 0, false).unwrap();
     }
+    // The takeover closes the old connection (MQTT-3.1.4-3).
+    // req: 5.0/MQTT-3.1.4-3
     seen |= disconnect_is_last(&mut old, "session takeover");
     new.disconnect().unwrap();
     super::forget(&broker, &id);
@@ -194,6 +196,8 @@ pub fn server_sends_nothing_after_its_disconnect() {
         bytes.extend(Packet::PingReq.encode(V));
     }
     let _ = c.send_raw(&bytes);
+    // A Malformed Packet closes the connection (MQTT-4.13.1-1).
+    // req: 5.0/MQTT-4.13.1-1
     seen |= disconnect_is_last(&mut c, "malformed packet");
 
     if !seen {

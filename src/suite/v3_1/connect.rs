@@ -204,8 +204,10 @@ pub fn connack_return_codes_are_in_range() {
                 // req: 3.1/V31-2.2-17
                 assert!(ack.code <= 5, "{connect:?} answered with code {}", ack.code);
             }
-            crate::Event::Closed => {}
-            other => panic!("{connect:?}: {other:?}"),
+            // A refusal may come as a close, possibly at the server's own
+            // CONNECT timeout ("should close", §3.1).
+            crate::Event::Closed | crate::Event::Timeout => {}
+            other @ crate::Event::Packet(_) => panic!("{connect:?}: {other:?}"),
         }
     }
 }

@@ -221,25 +221,21 @@ pub fn packet_above_the_servers_maximum_packet_size_is_an_error_0x95() {
         crate::outcome::skipped(format!("Maximum Packet Size {max} too large to test"));
         return;
     }
-    // Build a QoS 0 PUBLISH whose total size is max + 1.
+    // The smallest QoS 0 PUBLISH larger than max. Some sizes cannot be
+    // encoded (the Remaining Length grows by a byte at 128, 16384, ...), so
+    // this is max + 1 or a byte more.
     let t = topic();
     let empty = Packet::Publish(Publish::new(&t, b"")).encode(V).len();
-    let mut payload_len = max + 1 - empty;
-    loop {
-        let size = Packet::Publish(Publish::new(&t, &vec![0; payload_len]))
-            .encode(V)
-            .len();
-        if size <= max + 1 {
-            if size == max + 1 {
-                break;
-            }
-            payload_len += 1;
-        } else {
-            payload_len -= 1;
-        }
+    let mut payload_len = (max + 1).saturating_sub(empty);
+    while Packet::Publish(Publish::new(&t, &vec![0; payload_len]))
+        .encode(V)
+        .len()
+        <= max
+    {
+        payload_len += 1;
     }
     let bytes = Packet::Publish(Publish::new(&t, &vec![0; payload_len])).encode(V);
-    assert_eq!(bytes.len(), max + 1);
+    assert!(bytes.len() > max);
     let _ = c.send_raw(&bytes);
     // req: 5.0/MQTT-3.2.2-15
     let reason = c.expect_error_close(default_timeout()).unwrap();
@@ -414,8 +410,9 @@ pub fn topic_alias_zero_is_disconnected_with_0x94_or_0x82() {
     let broker = broker_or_skip!();
     // req: 5.0/MQTT-3.3.2-8
     let reason = alias_error(&broker, 0);
-    // Alias 0 is "not permitted" (3.3.2.3.4) but the spec names no specific
-    // code: 0x94 (Topic Alias invalid) and 0x82 (Protocol Error) both fit.
+    // "A Topic Alias value of 0 … is a Protocol Error, the receiver uses
+    // DISCONNECT with Reason Code of 0x94" (§3.3.4); 0x82 (Protocol Error)
+    // is accepted too, as the generic code for a Protocol Error.
     if let Some(r) = reason {
         // req: 5.0/MQTT-3.3.2-8
         assert!(matches!(r, 0x82 | 0x94), "alias 0: reason {r:#04x}");
