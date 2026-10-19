@@ -32,10 +32,10 @@ many client violations the broker detected and rejected (rejecting them is allow
 
 | Broker | Version | MQTT 3.1 | MQTT 3.1.1 | MQTT 5.0 | Requirements violated | Strict tier |
 |---|---|---|---|---|---|---|
-| [Eclipse Mosquitto](https://mosquitto.org) | `2.1.2` | ❌ 79/83 · 3 failed · 1 skipped | ❌ 134/138 · 2 failed · 2 skipped | ❌ 211/220 · 4 failed · 5 skipped | 14 | 34/38 rejected |
-| [EMQX](https://www.emqx.com) | `6.3.2` | ❌ 75/83 · 7 failed · 1 skipped | ❌ 135/138 · 1 failed · 2 skipped | ❌ 207/220 · 3 failed · 10 skipped | 16 | 33/37 rejected |
-| [HiveMQ CE](https://github.com/hivemq/hivemq-community-edition) | `24.04` | ❌ 76/83 · 4 failed · 3 skipped | ❌ 124/138 · 8 failed · 6 skipped | ❌ 201/220 · 5 failed · 14 skipped | 27 | 34/37 rejected |
-| [NanoMQ](https://nanomq.io) | `0.25.6` | ❌ 62/83 · 19 failed · 2 skipped | ❌ 100/138 · 35 failed · 3 skipped | ❌ 156/220 · 56 failed · 8 skipped | 129 | 31/35 rejected |
+| [Eclipse Mosquitto](https://mosquitto.org) | `2.1.2` | ❌ 79/83 · 3 failed · 1 skipped | ❌ 136/140 · 2 failed · 2 skipped | ❌ 213/222 · 4 failed · 5 skipped | 14 | 34/38 rejected |
+| [EMQX](https://www.emqx.com) | `6.3.2` | ❌ 75/83 · 7 failed · 1 skipped | ❌ 137/140 · 1 failed · 2 skipped | ❌ 208/222 · 3 failed · 11 skipped | 16 | 33/37 rejected |
+| [HiveMQ CE](https://github.com/hivemq/hivemq-community-edition) | `24.04` | ❌ 76/83 · 4 failed · 3 skipped | ❌ 125/140 · 8 failed · 7 skipped | ❌ 202/222 · 5 failed · 15 skipped | 27 | 34/37 rejected |
+| [NanoMQ](https://nanomq.io) | `0.25.6` | ❌ 60/83 · 21 failed · 2 skipped | ❌ 101/140 · 36 failed · 3 skipped | ❌ 158/222 · 54 failed · 10 skipped | 127 | 31/35 rejected |
 
 <details><summary>Failing cases</summary>
 
@@ -85,7 +85,7 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `5.0/malformed/pubrel_with_invalid_fixed_header_flags_closes`
 - `5.0/properties/retained_message_expiry_is_reduced_by_the_waiting_time`
 
-**NanoMQ** (110)
+**NanoMQ** (111)
 
 - `3.1/connect/client_id_longer_than_23_characters_gets_code_2`
 - `3.1/connect/empty_client_id_gets_code_2`
@@ -99,8 +99,10 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `3.1/persistence/unacknowledged_pubrel_is_resent_and_publish_is_not`
 - `3.1/persistence/unacknowledged_qos1_is_resent_with_dup_and_the_same_identifier`
 - `3.1/persistence/unacknowledged_qos2_publish_is_resent_with_dup`
+- `3.1/pubsub/qos0_messages_from_one_publisher_keep_their_order`
 - `3.1/pubsub/qos1_messages_from_one_publisher_keep_their_order`
 - `3.1/pubsub/qos2_duplicate_before_pubrel_is_not_delivered_twice`
+- `3.1/pubsub/qos2_messages_from_one_publisher_keep_their_order`
 - `3.1/pubsub/qos2_onward_delivery_is_exactly_once_with_either_method`
 - `3.1/pubsub/qos2_repeat_without_dup_is_recognised_by_its_message_id`
 - `3.1/retain/empty_retained_message_is_delivered_to_current_subscribers`
@@ -118,6 +120,7 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `3.1.1/interop/offline_queue_for_persistent_session`
 - `3.1.1/interop/resend_unacknowledged_on_session_resume`
 - `3.1.1/lifecycle/keep_alive_expiry_closes_the_connection`
+- `3.1.1/malformed/disconnect_with_invalid_fixed_header_flags_closes`
 - `3.1.1/malformed/pingreq_with_invalid_fixed_header_flags_closes`
 - `3.1.1/malformed/reserved_packet_types_close`
 - `3.1.1/malformed/server_to_client_packet_from_client_closes`
@@ -159,9 +162,9 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `5.0/interop/will_on_keep_alive_timeout_with_properties`
 - `5.0/lifecycle/disconnect_with_will_message_publishes_the_will`
 - `5.0/lifecycle/keep_alive_expiry_closes_the_connection`
-- `5.0/lifecycle/server_sends_nothing_after_its_disconnect`
 - `5.0/malformed/auth_with_invalid_fixed_header_flags_closes`
 - `5.0/malformed/content_type_with_ill_formed_utf8_closes`
+- `5.0/malformed/disconnect_with_invalid_fixed_header_flags_closes`
 - `5.0/malformed/reserved_packet_type_closes`
 - `5.0/malformed/response_topic_with_ill_formed_utf8_closes`
 - `5.0/malformed/subscribe_with_invalid_fixed_header_flags_closes`
@@ -186,9 +189,7 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `5.0/properties/queued_message_expiry_is_reduced_by_the_waiting_time`
 - `5.0/properties/retained_message_expiry_is_reduced_by_the_waiting_time`
 - `5.0/pubsub/inbound_dup_flag_is_not_propagated`
-- `5.0/pubsub/qos0_messages_from_one_publisher_keep_their_order`
 - `5.0/pubsub/qos2_duplicate_before_pubrel_is_not_delivered_twice`
-- `5.0/pubsub/qos2_messages_from_one_publisher_keep_their_order`
 - `5.0/shared/interrupted_qos2_shared_delivery_resumes_on_the_same_client`
 - `5.0/websocket/server_selects_mqtt_subprotocol`
 - `5.0/websocket/several_packets_in_one_frame_are_processed`
