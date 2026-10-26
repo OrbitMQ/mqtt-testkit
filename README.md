@@ -35,7 +35,7 @@ many client violations the broker detected and rejected (rejecting them is allow
 | [Eclipse Mosquitto](https://mosquitto.org) | `2.1.2` | ❌ 79/83 · 3 failed · 1 skipped | ❌ 136/140 · 2 failed · 2 skipped | ❌ 213/222 · 4 failed · 5 skipped | 14 | 34/38 rejected |
 | [EMQX](https://www.emqx.com) | `6.3.2` | ❌ 75/83 · 7 failed · 1 skipped | ❌ 137/140 · 1 failed · 2 skipped | ❌ 208/222 · 3 failed · 11 skipped | 16 | 33/37 rejected |
 | [HiveMQ CE](https://github.com/hivemq/hivemq-community-edition) | `24.04` | ❌ 76/83 · 4 failed · 3 skipped | ❌ 125/140 · 8 failed · 7 skipped | ❌ 202/222 · 5 failed · 15 skipped | 27 | 34/37 rejected |
-| [NanoMQ](https://nanomq.io) | `0.25.6` | ❌ 60/83 · 21 failed · 2 skipped | ❌ 101/140 · 36 failed · 3 skipped | ❌ 158/222 · 54 failed · 10 skipped | 127 | 31/35 rejected |
+| [NanoMQ](https://nanomq.io) | `0.25.7` | ❌ 61/83 · 20 failed · 2 skipped | ❌ 101/140 · 36 failed · 3 skipped | ❌ 157/222 · 55 failed · 10 skipped | 128 | 29/35 rejected |
 
 <details><summary>Failing cases</summary>
 
@@ -99,7 +99,6 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `3.1/persistence/unacknowledged_pubrel_is_resent_and_publish_is_not`
 - `3.1/persistence/unacknowledged_qos1_is_resent_with_dup_and_the_same_identifier`
 - `3.1/persistence/unacknowledged_qos2_publish_is_resent_with_dup`
-- `3.1/pubsub/qos0_messages_from_one_publisher_keep_their_order`
 - `3.1/pubsub/qos1_messages_from_one_publisher_keep_their_order`
 - `3.1/pubsub/qos2_duplicate_before_pubrel_is_not_delivered_twice`
 - `3.1/pubsub/qos2_messages_from_one_publisher_keep_their_order`
@@ -112,7 +111,6 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `3.1.1/connect/empty_client_id_without_clean_session_is_rejected_with_0x02`
 - `3.1.1/connect/foreign_protocol_name_is_not_processed_as_mqtt`
 - `3.1.1/connect/password_flag_without_password_closes`
-- `3.1.1/connect/password_without_username_closes`
 - `3.1.1/connect/unsupported_protocol_level_gets_connack_0x01_then_close`
 - `3.1.1/connect/username_flag_without_username_closes`
 - `3.1.1/interop/empty_client_id_requires_clean_session`
@@ -139,6 +137,7 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `3.1.1/pubsub/inbound_dup_flag_is_not_propagated`
 - `3.1.1/pubsub/qos0_messages_from_one_publisher_keep_their_order`
 - `3.1.1/pubsub/qos2_duplicate_before_pubrel_is_not_delivered_twice`
+- `3.1.1/pubsub/qos2_messages_from_one_publisher_keep_their_order`
 - `3.1.1/retain/empty_retained_message_is_delivered_to_current_subscribers`
 - `3.1.1/websocket/server_selects_mqtt_subprotocol`
 - `3.1.1/websocket/several_packets_in_one_frame_are_processed`
@@ -160,15 +159,15 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `5.0/interop/session_expiry_interval_lifecycle`
 - `5.0/interop/will_delay_versus_session_expiry`
 - `5.0/interop/will_on_keep_alive_timeout_with_properties`
-- `5.0/lifecycle/disconnect_with_will_message_publishes_the_will`
 - `5.0/lifecycle/keep_alive_expiry_closes_the_connection`
+- `5.0/lifecycle/normal_disconnect_discards_the_will`
 - `5.0/malformed/auth_with_invalid_fixed_header_flags_closes`
 - `5.0/malformed/content_type_with_ill_formed_utf8_closes`
-- `5.0/malformed/disconnect_with_invalid_fixed_header_flags_closes`
 - `5.0/malformed/reserved_packet_type_closes`
 - `5.0/malformed/response_topic_with_ill_formed_utf8_closes`
 - `5.0/malformed/subscribe_with_invalid_fixed_header_flags_closes`
 - `5.0/malformed/subscribe_without_topic_filters_closes`
+- `5.0/malformed/topic_alias_zero_closes`
 - `5.0/malformed/unsubscribe_filter_with_ill_formed_utf8_closes`
 - `5.0/malformed/unsubscribe_with_invalid_fixed_header_flags_closes`
 - `5.0/malformed/unsubscribe_without_topic_filters_closes`
@@ -189,13 +188,14 @@ many client violations the broker detected and rejected (rejecting them is allow
 - `5.0/properties/queued_message_expiry_is_reduced_by_the_waiting_time`
 - `5.0/properties/retained_message_expiry_is_reduced_by_the_waiting_time`
 - `5.0/pubsub/inbound_dup_flag_is_not_propagated`
+- `5.0/pubsub/qos0_messages_from_one_publisher_keep_their_order`
 - `5.0/pubsub/qos2_duplicate_before_pubrel_is_not_delivered_twice`
+- `5.0/pubsub/qos2_messages_from_one_publisher_keep_their_order`
 - `5.0/shared/interrupted_qos2_shared_delivery_resumes_on_the_same_client`
 - `5.0/websocket/server_selects_mqtt_subprotocol`
 - `5.0/websocket/several_packets_in_one_frame_are_processed`
 - `5.0/will/session_end_before_the_will_delay_publishes_the_will`
 - `5.0/will/will_delay_interval_postpones_the_will`
-- `5.0/will/will_delay_is_cut_short_by_session_expiry_0`
 - `5.0/will/will_is_published_after_keep_alive_expiry`
 - `5.0/will/will_is_published_only_once`
 
